@@ -1,0 +1,412 @@
+
+use DBI;
+use DateTime::Format::Strptime;
+
+$dbh = null;
+$dbn = null;
+
+sub emergencia_ivr {
+	my $self = shift;
+   	my $server_prop = $self->{server};
+   	my $agi = $server_prop->{agi};
+   	my $params = $agi->{params};
+   	$dbh = $self->{server}{dbh};
+   	$dbn = $self->{server}{dbn};
+   	
+   	$dbh->do("use portabilidad");
+
+   	# Parametros de Inicializacion
+   	my $extension = $agi->get_variable('EXTEN');
+   	my $option = null;
+   	my $error_code = 'OK';
+   	my $result = 0;
+    
+    my $len = length($extension);
+    $self->log(2, "emergencia_119: did: $extension - length: $len");
+    
+    #
+    # Verificamos si la extension llamada inicia con 119
+    	
+    #if ( ($extension =~ m/^119/i) && !((length($extension) == 12) || (length($extension) == 13)) ) {
+    if ( ( ($extension =~ m/^119/i) && !((length($extension) == 12) || (length($extension) == 13)) ) || ($extension =~ m/^7101981/i) ) {
+    	# Flujo IVR 119
+       	# Obtenemos la hora de la llamada, se realiza el playback de bienvenida de acuerdo a la hora de la llamada
+	   	$hour_now = DateTime->now(time_zone=>'America/Lima')->strftime('%H');
+	   	$hour_now = $hour_now + 0;
+	   	if ($hour_now <= 11) {
+	   		$agi->exec('PlayBack', 'emergencias/buenosdias');
+	   	} elsif ($hour_now <= 18) {
+	   	 	$agi->exec('PlayBack', 'emergencias/buenastardes');
+	   	} else {
+	   	  	$agi->exec('PlayBack', 'emergencias/buenasnoches');
+	   	}
+	   
+	   	# Reproducimos el menu de bienvenida
+	   	$agi->exec('PlayBack', 'emergencias/bienvenido');
+	   	for (my $i=0; $i<3; $i++) {
+		   	$option = $agi->get_data('emergencias/menuprincipal',3000,1);
+		   	if ($option == 1) {
+		   		$self->log(2, "emergencia_ivr (119): menu principal - option: $option - extension: $extension");
+		   		$result = emergencia_grabar_119($self, $agi, $dbh, $dbn);
+		   		last;
+		   	} elsif ($option == 2) {
+		   		$self->log(2, "emergencia_ivr (119): menu principal - option: $option - extension: $extension");
+		   		$result = emergencia_escuchar_119($self, $agi, $dbh, $dbn);
+		   		last;
+		   	} elsif ($option == 3) {
+		   		$agi->exec('PlayBack', 'emergencias/hastaluego');
+		   		$result = 2;
+		   		last;
+		   	} elsif ( ($option eq '') && ($i<2) ) {
+		   		$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/porfavorintentenuevamente');
+	   		} else {
+		   		$agi->exec('PlayBack', 'emergencias/losientopero&emergencias/nofueposibleconectarsullamada');
+		   		$agi->exec('PlayBack', 'emergencias/hastaluego');
+		   		$result = 2;
+		   		last;
+		   	}
+	   	}
+    } elsif ( ($extension =~ m/^119/i) && ((length($extension) == 12) || (length($extension) == 13)) ) {
+    	# Verificamos la opcion enviada al flujo IVR 120
+    	# 1: Grabar
+    	# 2: Escuchar
+    	$option = substr($extension, 3, 1);
+    	my $casilla = substr($extension, 4);
+    	
+    	$self->log(2, "emergencia_ivr (120): menu principal - option: $option - extension: $extension");
+    	if ($option == 1) {
+    		$result = emergencia_grabar_120($self, $agi, $dbn, $casilla);
+    	} elsif ($option == 2) {
+    		$result = emergencia_escuchar_120($self, $agi, $dbn, $casilla);
+    	} else {
+    		$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/hastaluego');
+    		$result = 2;
+    	}
+    } else {
+    	# Flujo IVR desconocido - Error
+    	$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/hastaluego');
+    	$result = 2;
+    }
+   	
+   	# Preevaluacion de resultados
+	if ($result == 0) {
+		$error_code = 'OK';
+	} elsif ($result = 1) {
+		$error_code = 'UNMATCHED';
+	} else {
+		$error_code = 'ERROR';
+	}
+	$agi->set_variable('error_code', $error_code);
+   	return(1);	
+}
+
+#
+# Funcion emergencia_grabar_119, utilizada por el flujo IVR 119
+sub emergencia_grabar_119 {
+	my ($self, $agi, $dbh, $dbn) = @_;
+	my $casilla = null;
+	my $did = '';
+	
+	# Pedir el ingreso de la casilla de voz
+	for (my $i=0; $i<2; $i++) {
+		$casilla = $agi->get_data('emergencias/porfavoringreseelnumerocodigociudad',6000,9);
+		if ( (length($casilla) == 8) || (length($casilla) == 9) ) {
+			last;
+		} elsif ( ((length($casilla) != 8) || (length($casilla) != 9)) && ($i<1) ) {
+			$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/porfavorintentenuevamente');
+		} elsif ( ($casilla eq '') && ($i<1) ) {
+			$agi->exec('PlayBack', 'emergencias/porfavorintentenuevamente');
+		} else {
+	   		$agi->exec('PlayBack', 'emergencias/hastaluego');
+	   		return(2);
+	   	}
+	}
+	
+	my $isamp = -1;
+	if (length($casilla) == 8) {
+		# En caso de que la casilla sea un numero fijo entonces verificamos si la casilla pertenece a AMP
+		$isamp = verificar_casilla_amp($self, $dbh, $casilla);
+	} elsif ( (length($casilla) == 9) && ($casilla =~ m/^9/i) ) {
+		# En caso de que la casilla sea un numero movil entonces no verificamos si la casilla pertenece a AMP
+		$isamp = 0;
+	}
+	$agi->exec('PlayBack', 'emergencias/ustedhallamadoalacasilla');
+	$agi->say_digits($casilla);
+	
+	$self->log(2, "emergencia_ivr (119): menu grabar - casilla: $casilla - isamp: $isamp");
+	if ($isamp == 0) {
+		# La casilla de voz no pertenece a Americatel
+		$did = '1191'.$casilla;
+		$agi->set_variable('numero_did', $did);
+		return(1);
+	} elsif ($isamp == 1) {
+		# La casilla de voz pertenece a Americatel
+		ivr_grabar($self, $agi, $dbn, $casilla);
+		return(0);
+	} else {
+		# La casilla de voz es incorrecta
+		$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/hastaluego');
+		return(2);
+	}
+}
+
+#
+# Funcion emergencia_escuchar_119, utilizada por el flujo IVR 119
+sub emergencia_escuchar_119 {
+	my ($self, $agi, $dbh, $dbn) = @_;
+	my $casilla = null;
+	my $did = '';
+	
+	# Pedir el ingreso de la casilla de voz
+	for (my $i=0; $i<2; $i++) {
+		$agi->exec('PlayBack', 'emergencias/porfavoringresesunumero');
+		$casilla = $agi->get_data('emergencias/recuerdeanteponerelcodigo',6000,9);
+		if ( (length($casilla) == 8) || (length($casilla) == 9) ) {
+			last;
+		} elsif ( (length($casilla) != 8) && ($i<1) ) {
+			$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/porfavorintentenuevamente');
+		} elsif ( ($casilla eq '') && ($i<1) ) {
+			$agi->exec('PlayBack', 'emergencias/porfavorintentenuevamente');
+		} else {
+	   		$agi->exec('PlayBack', 'emergencias/hastaluego');
+	   		return(2);
+	   	}
+	}
+	
+	my $isamp = -1;
+	if (length($casilla) == 8) {
+		# En caso de que la casilla sea un numero fijo entonces verificamos si la casilla pertenece a AMP
+		$isamp = verificar_casilla_amp($self, $dbh, $casilla);
+	} elsif ( (length($casilla) == 9) && ($casilla =~ m/^9/i) ) {
+		# En caso de que la casilla sea un numero movil entonces no verificamos si la casilla pertenece a AMP
+		$isamp = 0;
+	}
+	$agi->exec('PlayBack', 'emergencias/ustedhallamadoalacasilla');
+	$agi->say_digits($casilla);
+	
+	$self->log(2, "emergencia_ivr (119): menu escuchar - casilla: $casilla - isamp: $isamp");
+	if ($isamp == 0) {
+		# La casilla de voz no pertenece a Americatel
+		$did = '1192'.$casilla;
+		$agi->set_variable('numero_did', $did);
+		return(1);
+	} elsif ($isamp == 1) {
+		# La casilla de voz pertenece a Americatel
+		ivr_escuchar($self, $agi, $dbn, $casilla);
+		return(0);
+	} else {
+		# La casilla de voz es incorrecta
+		$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/hastaluego');
+		return(2);
+	}
+}
+
+#
+# Funcion emergencia_grabar_120, utilizada por el flujo IVR 120
+sub emergencia_grabar_120 {
+	my ($self, $agi, $dbn, $casilla) = @_;
+	
+	$self->log(2, "emergencia_ivr (120): menu grabar - casilla: $casilla");
+		
+	$agi->exec('PlayBack', 'emergencias/ustedhallamadoalacasilla');
+	$agi->say_digits($casilla);
+	
+	if  ((length($casilla) == 8) || (length($casilla) == 9)) {
+		ivr_grabar($self, $agi, $dbn, $casilla);
+		return(0);
+	} else {
+		$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/hastaluego');
+		return(2);
+	}
+}
+
+#
+# Funcion emergencia_escuchar_120, utilizada por el flujo IVR 120
+sub emergencia_escuchar_120 {
+	my ($self, $agi, $dbn, $casilla) = @_;
+	
+	$self->log(2, "emergencia_ivr (120): menu escuchar - casilla: $casilla");
+	
+	$agi->exec('PlayBack', 'emergencias/ustedhallamadoalacasilla');
+	$agi->say_digits($casilla);
+	
+	if  ((length($casilla) == 8) || (length($casilla) == 9)) {
+		ivr_escuchar($self, $agi, $dbn, $casilla);
+		return(0);
+	} else {
+		$agi->exec('PlayBack', 'emergencias/elnumeroingresadonoescorrecto&emergencias/hastaluego');
+		return(2);
+	}
+}
+
+# Funcion verificar_casilla_amp - Verifica si la casilla ingresada pertenece a Americatel
+# Posibles valores de retorno:
+# 0: La casilla no le pertence a Americatel
+# 1: La casilla pertenece a Americatel
+# 2: La casilla no es numero valido
+sub verificar_casilla_amp {
+	my ($self, $dbh, $phone) = @_;
+	my $errorCode = 'OK';
+	
+    my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+    my $sth = $dbh->prepare($query);
+    $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+    my $data = $sth->fetch;
+    my $nrn_dest = $data->[0];
+    if ($nrn_dest == null) {
+    	my $prefijo = substr($phone, 0, 6);
+        $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+        $sth = $dbh->prepare($query);
+        $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+        $data = $sth->fetch;
+        $nrn_dest = $data->[0];
+        if ($nrn_dest == null) {
+	    	$errorCode = 'UNMATCHED';
+         }
+    }
+    
+    # La casilla pertenece a Americatel, si nrn_dest == 37 
+    if ( ($nrn_dest == 37) && ($errorCode eq 'OK') ) {
+    	return(1);
+    } elsif ($errorCode eq 'OK') {
+    	return(0);
+    } else {
+    	return(2);
+    }
+}
+
+sub ivr_grabar {
+	my ($self, $agi, $dbn, $phone) = @_;
+	
+	# Verificamos si el usuario (casilla) existe en la tabla user
+	# De no ser el caso se procede a crear el registro
+	my $query = "SELECT user_id FROM user WHERE casilla = ?";
+	my $sth = $dbn->prepare($query);
+	$sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+	my $data = $sth->fetch;
+	my $user_id = $data->[0];
+	if ($user_id == null) {
+		# Creamos el usuario (casilla) en la tabla user
+		$query = "INSERT INTO user (casilla, estado, fecha_activacion, fecha_ultimo_acceso) VALUES (?,'A',now(),now())";
+		my $sth_row = $dbn->prepare($query);
+		$sth_row->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+		$sth_row->finish;
+		
+		# Obtenemos el user_id del usuario (casilla) en la tabla user
+		$query = "SELECT user_id FROM user WHERE casilla = ?";
+		my $sth_row = $dbn->prepare($query);
+		$sth_row->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+		$data = $sth_row->fetch;
+		$user_id = $data->[0];
+		$sth_row->finish;
+	} else {
+		# Actualizamos la columna fecha_ultimo_acceso en la tabla user
+		$query = "UPDATE user SET fecha_ultimo_acceso = now() WHERE user_id = ?";
+		my $sth_row = $dbn->prepare($query);
+		$sth_row->execute($user_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id");
+		$sth_row->finish;
+	}
+	
+	# Grabamos el mensaje IVR 119
+	# Insertamos el registro en la tabla message
+	$query = "SELECT count(*) FROM message WHERE user_id = ? AND estado = 'A'";
+	$sth = $dbn->prepare($query);
+	$sth->execute($user_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id");
+	$data = $sth->fetch;
+	my $cnt = $data->[0];
+
+	if ($cnt == 5) {
+		# Obtenemos el registro mas antiguo de la tabla message correspondiente al user_id
+		$query = "SELECT message_id FROM message WHERE user_id = ? AND estado = 'A' ORDER BY 1 asc LIMIT 1";
+		$sth = $dbn->prepare($query);
+		$sth->execute($user_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id");
+		$data = $sth->fetch;
+		my $message_id = $data->[0];
+		$sth->finish;
+		
+		# Actualizamos el estado del registro obtenido
+		$query = "UPDATE message SET estado = 'I' WHERE message_id = ?";
+		$sth = $dbn->prepare($query);
+		$sth->execute($message_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - message_id: $message_id");
+		$sth->finish;
+	}
+	
+	# Insertamos el registro sin inconvenientes
+	$query = "SELECT count(*) FROM message WHERE user_id = ?";
+	$sth = $dbn->prepare($query);
+	$sth->execute($user_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id");
+	$data = $sth->fetch;
+	my $fid = $data->[0];
+	$fid = $fid + 1;
+	$sth->finish;
+	
+	$query = "INSERT INTO message (user_id, fid, estado, fecha_creacion, fecha_ultimo_acceso) values (?,?,'A',now(),now())";
+	$sth = $dbn->prepare($query);
+	$sth->execute($user_id, $fid) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id - fid $fid");
+	$sth->finish;
+	
+	# Mensaje de inicio de grabacion
+	$agi->exec('PlayBack', 'emergencias/porfavorgrabesumensaje');
+	$filename = 'es/casillas/'.$phone.'_'.$fid;
+	$agi->record_file($filename,'gsm','#','30000','0',1,'5');
+	
+	# Mensaje de grabacion correcta
+	$agi->exec('PlayBack', 'emergencias/mensajeguardado&emergencias/graciasporllamar&emergencias/hastaluego');
+}
+
+sub ivr_escuchar {
+	my ($self, $agi, $dbn, $phone) = @_;
+	
+	# Verificamos si el usuario (casilla) existe en la tabla user
+	my $query = "SELECT user_id FROM user WHERE casilla = ?";
+	my $sth = $dbn->prepare($query);
+	$sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+	my $data = $sth->fetch;
+	my $user_id = $data->[0];
+	if ($user_id == null) {
+		# No hay mensajes de voz para la casilla marcada
+		$agi->exec('PlayBack', 'emergencias/ustednotiene&emergencias/mensajes&emergencias/ensucasilladevoz&emergencias/hastaluego');
+		return(1);
+	} else {
+		# Escuchamos el mensaje IVR 119
+		$query = "SELECT count(*) FROM message WHERE user_id = ? AND estado = 'A'";
+		$sth = $dbn->prepare($query);
+		$sth->execute($user_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id");
+		$data = $sth->fetch;
+		my $cnt = $data->[0];
+	
+		if ($cnt == 0) {
+			# No hay registros en la tabla message
+			$agi->exec('PlayBack', 'emergencias/ustednotiene&emergencias/mensajes&emergencias/ensucasilladevoz&emergencias/hastaluego');
+			return(1);
+		} else {
+			# Informacion de cantidad de mensajes
+			$agi->exec('PlayBack', 'emergencias/ustedtiene');
+			if ($cnt == 1) {
+				$agi->exec('PlayBack', 'emergencias/un&emergencias/mensaje');
+			} else {
+				$agi->say_digits($cnt);
+				$agi->exec('PlayBack', 'emergencias/mensajes');
+			}
+			$agi->exec('PlayBack', 'emergencias/ensucasilladevoz&emergencias/beep');
+			
+			# Obtenemos los registros de los mensajes de la casilla marcada
+			$query = "SELECT fid FROM message WHERE user_id = ? AND estado = 'A'";
+			$sth = $dbn->prepare($query);
+			$sth->execute($user_id) or $self->log(2, "Unable to execute '$query'. $sth->errstr - user_id: $user_id");
+			
+			my $i = 1;
+			while (@row = $sth->fetchrow_array) {
+				$agi->exec('PlayBack', 'emergencias/mensaje');
+				$agi->say_digits($i);
+				my $fid = $row[0];
+				my $filename = 'es/casillas/'.$phone.'_'.$fid;
+				$agi->exec('PlayBack', $filename);
+				$agi->exec('PlayBack', 'emergencias/beep');
+				$i++;
+			}
+			# Mensaje de despedida
+			$agi->exec('PlayBack', 'emergencias/graciasporllamar&emergencias/hastaluego');
+		}
+	}
+}
