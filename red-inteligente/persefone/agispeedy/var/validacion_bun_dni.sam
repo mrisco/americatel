@@ -1,0 +1,43 @@
+use DBI;
+use DBI qw(:sql_types);
+
+$db_mssql = null;
+
+sub validacion_bun_dni {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $db_mssql = $self->{server}{dbbun};
+
+   my $agent = $params->{'agent'};
+
+   $db_mssql->do("use $agent"); 
+
+   # Parametros de Inicializacion
+   my $cli = $params->{'cli'};
+   my $dni = $params->{'dni'};
+
+   ## Verificacion de Planes Flexibles / Control
+   $self->log(2, "Validacion_bun_dni: cli $cli -- dni $dni");
+
+   ## my $sth = $db_mssql->prepare("select BUN_PERU.dbo.fnComparaDNI(?, ?)");
+   ## my $query = "select BUN_PERU.dbo.fnComparaDNI('12471516','78098089')";
+   my $query = "select BUN_PERU.dbo.fnComparaDNI('$cli','$dni')";
+   ## $self->log(2, "Validacion_bun_dni: query $query");
+   my $sth = $db_mssql->prepare($query);
+   $sth->execute;
+
+   # Salida de la Query
+   $data = $sth->fetch;
+   $error_code = $data->[0];
+
+   $errorCode = 'NoOK';
+   if ($error_code eq "1") {
+      $errorCode = 'OK';
+   } 
+
+   $self->log(2, "Validacion_bun_dni: salida $errorCode");
+   $agi->set_variable('errorCode',$errorCode);
+   return($errorCode);
+}

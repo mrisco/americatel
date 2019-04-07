@@ -1,0 +1,412 @@
+use DBI;
+use DBI qw(:sql_types);
+
+$dbh = null;		# descriptor base de datos HOST
+$dba = null;		# descriptor base de datos AGENT
+$dbp = null;		# descriptor base de datos PORTABILIDAD
+$db_mysql = null;	# descriptor base de datos BUN
+
+sub proceso_1977 {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $dbh = $self->{server}{dbh};
+   $dba = $self->{server}{dba};
+   $dbp = $self->{server}{dbp};
+   $db_mysql = $self->{server}{dbmynsoft};
+
+   my $agent = $params->{'agent'};
+
+   $dbh->do("use HOST"); 
+   $dba->do("use $agent"); 
+   $dbp->do("use portabilidad");
+
+   # Parametros de Inicializacion
+   $agi_name = "proceso_1977";
+   $numberType = 0;
+   $switchNumber = 1;
+   $numberingPlan = 0;
+   $tariffKind = "C";
+   $timePeriodClassName = "ALL";
+   #$fp_usePPSessionTable = 1;
+   $ani = $params->{'cli'};
+   $dni = $params->{'dni'};
+   $didContent = $agi->get_variable('CDR(didContent)');
+   $calledPhoneNb = $agi->get_variable('CDR(calledPhoneNb)');
+   $tcl_tclassName = $agi->get_variable(tcl_tclassName);
+   $destNbTranslation = $agi->get_variable(destNbTranslation);
+   $zone_modifiedAccessType = $agi->get_variable(zone_modifiedAccessType);
+
+   #$self->log(2, "dni $dni");
+   #$self->log(2, "tariffKind $tariffKind");
+   #$self->log(2, "numberingPlan $numberingPlan");
+   #$self->log(2, "numberType $numberType");
+   #$self->log(2, "destNbTranslation $destNbTranslation");
+   #$self->log(2, "zone_modifiedAccessType $zone_modifiedAccessType");
+   #$self->log(2, "calledPhoneNb $calledPhoneNb");
+   #$self->log(2, "didContent $didContent");
+   
+   $self->log(2, "AGI: $agi_name: =================================================================================================");
+   $self->log(2, "AGI: $agi_name: variables en sesion - agent: $agent - dni: $dni - ani: $ani - didContent: $didContent - calledPhoneNb: $calledPhoneNb");
+   $self->log(2, "AGI: $agi_name: variables en sesion - tcl_tclassName: $tcl_tclassName - destNbTranslation: $destNbTranslation - zone_modifiedAccessType: $zone_modifiedAccessType");
+   $self->log(2, "AGI: $agi_name: variables fijas - numberType: $numberType - numberingPlan: $numberingPlan - tariffKind: $tariffKind - switchNumber: $switchNumber - timePeriodClassName: $timePeriodClassName");
+  
+   if ($agent eq 'AGENT_CFRAUDE') {
+   	  $numberingPlan = 1;
+      $numberType = 1;
+
+      # Limitacion de llamadas concurrentes desde un mismo ANI (primarios) a destino de fraude
+      $muc_comment = $agi->get_variable('muc_comment');
+      if ($muc_comment == null) {
+         # Por defecto el limite de llamadas concurrentes es 1
+         $limit_concurrent_calls = 1;
+      } else {
+         $limit_concurrent_calls = $muc_comment;
+      }
+      $agi->set_variable('limit_concurrent_calls',$limit_concurrent_calls);
+      #$self->log(2, "limit_concurrent_calls $limit_concurrent_calls");
+      $self->log(2, "AGI: $agi_name: validacion AGENT_CFRAUDE - limit_concurrent_calls $limit_concurrent_calls");
+   } 
+
+   # VALIDACION PLAN BUN
+   my $sth = $dba->prepare("select productName from multi_cli where cli = ?");
+   $sth->execute($ani);
+   $data = $sth->fetch;
+   
+   $productName = $data->[0];
+   $tipo_plan = 'A';
+   if ($productName != null) {
+      my $sth = $db_mysql->prepare("select carrier, tipo_plan from rango_planes where cast(? as UNSIGNED) >=  cast(SUBSTRING_INDEX(rango, '-',1) as UNSIGNED) and cast(? as UNSIGNED) <=  cast(SUBSTRING_INDEX(rango, '-',-1) as UNSIGNED)");
+      $sth->execute($productName, $productName);
+      $data = $sth->fetch;
+      
+      $carrier = $data->[0];
+      $tipoPlan = $data->[1];
+      if (($carrier =~ m/1977/) && ($tipoPlan =~ m/control/i)) {
+      	 $tipo_plan = 'C';
+      }
+   }
+   $agi->set_variable('tipo_plan', $tipo_plan);
+   $self->log(2, "AGI: $agi_name: ani: $ani - productName: $productName - tipo_plan: $tipo_plan");
+   
+   if ($tipo_plan ne 'C') {
+   	  $error_code = "PARAM_MISSING";
+   	  $agi->set_variable('errorCode',$error_code);
+      $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+      return($error_code);
+   }
+   
+   # VALIDACION INICIAL DE SALDO DISPONIBLE
+   $ivr_saldo_disponible = $agi->get_variable('CDR(saldo_disponible)');
+   #$self->log(2, "proceso.sam: saldo_disponible $ivr_saldo_disponible");
+   $self->log(2, "AGI: $agi_name: saldo_disponible: $ivr_saldo_disponible");
+   if ($ivr_saldo_disponible == 0) {
+      $error_code = "NO_SALDO_AVAILABLE";
+      $agi->set_variable('errorCode',$error_code);
+      $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+      return($error_code);
+   }
+
+   # IVR_SERVICE: Requerido para CONSULTA DE SALDOS: OPCION *1
+   if ($dni eq '*1') {
+      $ivr_saldo_disponible = sprintf "%.2f", $ivr_saldo_disponible;
+      ($integer_part, $decimal_part) = split(/\./, $ivr_saldo_disponible);
+      $agi->exec(Playback, su_saldo_esde);
+      $agi->say_number($integer_part);
+      $agi->exec(Playback, nuevos_soles);     
+      if (int($decimal_part) > 0) { 
+         $agi->say_number($decimal_part);
+         $agi->exec(Playback, centimos);     
+      } 
+      $error_code = "IVR_SERVICE";
+      $agi->set_variable('errorCode',$error_code);
+      $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+      return($error_code);
+   }
+
+   if (!($dni =~ /^[+-]?\d+$/)) {
+   #}
+   #else {
+      #$self->log(2, "proceso.sam: NUMERO INGRESADO NO VALIDO");
+      $error_code = "NUMERO_NO_VALIDO";
+      $agi->set_variable('errorCode',$error_code);
+      $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+      return($error_code);
+   }
+
+   # Lanzando el Store Procedure 1 ----------------------
+
+   $self->log(2, "AGI: $agi_name: SP 1 - exec NS_H_GET_RTE_ZRULES_110 \"$destNbTranslation\", \"$dni\", $numberingPlan, $numberType");
+   
+   $sth = $dbh->prepare("exec NS_H_GET_RTE_ZRULES_110 ?,?,?,?");
+   $sth->bind_param(1, $destNbTranslation, SQL_CHAR);
+   $sth->bind_param(2, $dni, SQL_CHAR);
+   $sth->bind_param(3, $numberingPlan, SQL_INTEGER);
+   $sth->bind_param(4, $numberType, SQL_INTEGER);
+   $sth->execute;
+
+   # Salida del Store Procedure
+   $data = $sth->fetch;
+  
+   $translationName = $data->[2];
+   $trn_numberingPlan = $data->[3];
+   $trn_numberType = $data->[4];
+   $prefix = $data->[5];
+   $nbToRemove = $data->[6];
+   $nbPrefixToAdd = $data->[7];
+   $error_code = $data->[0];
+   $agi->set_variable('errorCode',$error_code);
+   #$comment = $data->[1];
+
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: translationName $translationName");
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: trn_numberingPlan $trn_numberingPlan");
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: trn_numberType $trn_numberType");
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: prefix $prefix");
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: nbToRemove $nbToRemove");
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: nbPrefixToAdd $nbPrefixToAdd");
+   #$self->log(2, "NS_H_GET_RTE_ZRULES_110: errorCode $error_code");
+
+   $self->log(2, "AGI: $agi_name: SP 1 - translationName: $translationName - trn_numberingPlan: $trn_numberingPlan - trn_numberType: $trn_numberType - prefix: $prefix");
+   $self->log(2, "AGI: $agi_name: SP 1 - nbToRemove: $nbToRemove - nbPrefixToAdd $nbPrefixToAdd - errorCode $error_code");
+   
+   if ($error_code eq "OK"){
+      #$self->log(2, "tcl_tclassName $tcl_tclassName");
+      #$self->log(2, "tariffKind $tariffKind");
+      #$self->log(2, "zone_modifiedAccessType $zone_modifiedAccessType");
+      #$self->log(2, "timePeriodClassName $timePeriodClassName");
+      #$self->log(2, "calledPhoneNb $calledPhoneNb");
+      #$self->log(2, "dni $dni");
+      if ($didContent eq 'A') {
+         $dni_canonical = $nbPrefixToAdd . substr($dni,length($calledPhoneNb));
+      } else {
+         $dni_canonical = $nbPrefixToAdd . substr($dni,$nbToRemove);
+      }
+      $agi->set_variable('dni_canonical', $dni_canonical);
+	  #$self->log(2, "AGI: $agi_name: dni_canonical: $dni_canonical");
+
+      #$self->log(2, "NS_N_GET_ZONE_AND_TARIFF_114: tcl_tclassName $tcl_tclassName");
+      #$self->log(2, "NS_N_GET_ZONE_AND_TARIFF_114: tariffKind $tariffKind");
+      #$self->log(2, "NS_N_GET_ZONE_AND_TARIFF_114: zone_modifiedAccessType $zone_modifiedAccessType");
+      #$self->log(2, "NS_N_GET_ZONE_AND_TARIFF_114: timePeriodClassName $timePeriodClassName");
+      #$self->log(2, "NS_N_GET_ZONE_AND_TARIFF_114: dni_canonical $dni_canonical");
+
+      $self->log(2, "AGI: $agi_name: SP 2 - exec NS_N_GET_ZONE_AND_TARIFF_114 \"$tcl_tclassName\", \"$tariffKind\", \"$zone_modifiedAccessType\", \"$timePeriodClassName\", \"$dni_canonical\"");
+
+      my $sth = $dba->prepare("exec NS_N_GET_ZONE_AND_TARIFF_114 ?,?,?,?,?");
+      $sth->bind_param(1, $tcl_tclassName, SQL_CHAR);
+      $sth->bind_param(2, $tariffKind, SQL_CHAR);
+      $sth->bind_param(3, $zone_modifiedAccessType, SQL_CHAR);
+      $sth->bind_param(4, $timePeriodClassName, SQL_CHAR);
+      $sth->bind_param(5, $dni_canonical, SQL_CHAR);
+      $sth->execute;
+      
+      $data = $sth->fetch;
+	                
+      #$self->log(2, "Salida $error_code");
+
+      #$tcln_derivePar_aCoeffConnectionPrice = $data->[16];
+      #$tcln_derivePar_bShiftConnectionPrice = $data->[17];
+      #$tcln_derivePar_aCoeffSampPrice = $data->[18];
+      #$tcln_derivePar_bShiftSampPrice = $data->[19];
+      #$tcln_derivePar_aCoeffDuration = $data->[20];
+      #$tcln_derivePar_bShiftDuration = $data->[21];
+      #$tcln_derivePar_aCoeffAdminFee = $data->[22];
+      #$tcln_derivePar_bShiftAdminFee = $data->[23];
+      #$tcln_useTelecomChargeIndication = $data->[24];
+      #$tcln_sessionFee = $data->[25];
+      #$tcln_sessionFeeAmount = $data->[26];
+      #$tariff_tclassName = $data->[27];
+      #$tariff_idKind  = $data->[28];
+      $tariff_idAccessType  = $data->[29];
+      $tariffTimePeriod  = $data->[30];
+      $tariffItem = $data->[31];
+      #$tariff_value_tabTarperInf_0_accessPrice = $data->[32];
+      $tariff_value_tabTarperInf_0_sampDelayInSec = $data->[33];
+      $tariff_value_tabTarperInf_0_sampPrice = $data->[34];
+      #$tariff_value_tabTarperInf_0_nmaxSamples = $data->[35];
+      $error_code = $data->[0];
+      
+      $agi->set_variable('tariffItem', $tariffItem);
+      $agi->set_variable('tariff_idAccessType', $tariff_idAccessType);     
+      $agi->set_variable('errorCode', $error_code);
+      #$comment = $data->[1];
+      
+      #$self->log(2, "tariffItem $tariffItem");
+      #$self->log(2, "tcln_derivePar_aCoeffSampPrice $tcln_derivePar_aCoeffSampPrice");
+      #$self->log(2, "tariff_value_tabTarperInf_0_sampDelayInSec $tariff_value_tabTarperInf_0_sampDelayInSec");
+      $self->log(2, "AGI: $agi_name: SP 2 - tariffItem: $tariffItem - tariff_idAccessType: $tariff_idAccessType - tariffTimePeriod: $tariffTimePeriod");
+      $self->log(2, "AGI: $agi_name: SP 2 - tariff_value_tabTarperInf_0_sampDelayInSec: $tariff_value_tabTarperInf_0_sampDelayInSec");
+                    
+      if ($error_code eq "OK"){
+         $agi->set_variable('tariffTimePeriod',$tariffTimePeriod);
+         $agi->set_variable('sampDelayInSec',$tariff_value_tabTarperInf_0_sampDelayInSec);
+         $agi->set_variable('sampPrice',$tariff_value_tabTarperInf_0_sampPrice);
+         
+         $saldo_disponible = $agi->get_variable('CDR(saldo_disponible)');
+         $tarifa_sample = $tariff_value_tabTarperInf_0_sampPrice;
+         
+         $agi->set_variable('tarifa_sample',$tarifa_sample);
+         $samples_disponibles = int($saldo_disponible / $tarifa_sample || 0); 
+         
+         $agi->set_variable('samples_disponibles',$samples_disponibles);
+         $minutos_disponibles = int(($samples_disponibles * $tariff_value_tabTarperInf_0_sampDelayInSec / 60) || 0); 
+         
+         $agi->set_variable('minutos_disponibles',$minutos_disponibles);
+         
+         #$self->log(2, "sampPrice $tariff_value_tabTarperInf_0_sampPrice");
+         #$self->log(2, "saldo_disponible $saldo_disponible");
+         #$self->log(2, "samples_disponibles $samples_disponibles");
+         #$self->log(2, "minutos_disponibles $minutos_disponibles");
+         $saldo_disponible_redondeado = sprintf("%.2f", $saldo_disponible);
+         my @saldo = split(/\./,$saldo_disponible_redondeado);
+         my $saldo_soles = int($saldo[0] || 0);
+         my $saldo_centimos = int($saldo[1] || 0);
+         $agi->set_variable('saldo_soles', $saldo_soles);
+         $agi->set_variable('saldo_centimos', $saldo_centimos);
+         
+         $self->log(2, "AGI: $agi_name: sampPrice: $tariff_value_tabTarperInf_0_sampPrice - samples_disponibles: $samples_disponibles - minutos_disponibles: $minutos_disponibles");
+ 		 $self->log(2, "AGI: $agi_name: saldo_disponible: $saldo_disponible - saldo_soles: $saldo_soles - saldo_centimos: $saldo_centimos");
+ 
+         if ($samples_disponibles >= 1) {
+            # Para saber por donde enrutar la llamada
+            $tariffzoneorItem = "";
+            $fp_pt_routeClassForZone = "";
+            $rtcl_routeClass = $agi->get_variable(rtcl_routeClass);
+            
+            $self->log(2, "AGI: $agi_name: SP 3 - exec NS_H_GET_RTES_TRANS_RTE_ASLTCAR_110 \"$rtcl_routeClass\", \"$fp_pt_routeClassForZone\", \"$timePeriodClassName\", \"$dni_canonical\", \"$tariffzoneorItem\", \"$switchNumber\"");
+            
+            my $sth = $dbh->prepare("exec NS_H_GET_RTES_TRANS_RTE_ASLTCAR_110 ?,?,?,?,?,?");            
+            $sth->bind_param(1, $rtcl_routeClass, SQL_CHAR);
+            $sth->bind_param(2, $fp_pt_routeClassForZone, SQL_CHAR);
+            $sth->bind_param(3, $timePeriodClassName, SQL_CHAR);
+            $sth->bind_param(4, $dni_canonical, SQL_CHAR);
+            $sth->bind_param(5, $tariffzoneorItem, SQL_CHAR);
+            $sth->bind_param(6, $switchNumber, SQL_CHAR);
+            $sth->execute;
+                        
+	    	$data = $sth->fetch;
+	                    
+	        $error_code = $data->[0];
+	    	#$rbz_carrierName = $data->[13];
+	    	#$rbz_timePeriod = $data->[10];
+	    	$rtt_carrierName= $data->[16];
+	    	#$rtt_prefix = $data->[17];
+	    	$rtt_nbToRemove = $data->[18];
+	    	$rtt_prefixToAdd = $data->[19];
+	    	#$rtt_numberingPlan = $data->[20];
+	    	#$rtt_numberType = $data->[21];
+	    	#$altc_carrierName = $data->[25];
+	    	$car_carriername = $data->[35];
+
+			$agi->set_variable('ruta_salida',$rtt_carrierName);
+            $agi->set_variable('car_carriername',$car_carriername);
+            #$self->log(2, "rtt_carrierName: $rtt_carrierName");
+            #$self->log(2, "rtt_prefix: $rtt_prefix");
+            #$self->log(2, "rtt_nbToRemove: $rtt_nbToRemove");
+            #$self->log(2, "rtt_prefixToAdd: $rtt_prefixToAdd");
+            #$self->log(2, "rtt_numberingPlan: $rtt_numberingPlan");
+            #$self->log(2, "rtt_numberType: $rtt_numberType");
+           
+            $dni_salida = $rtt_prefixToAdd.substr($dni_canonical, $rtt_nbToRemove);
+            $self->log(2, "AGI: $agi_name: SP 3 - rtt_carrierName: $rtt_carrierName - rtt_nbToRemove: $rtt_nbToRemove - rtt_prefixToAdd: $rtt_prefixToAdd");
+            $self->log(2, "AGI: $agi_name: dni_canonical: $dni_canonical - dni_salida: $dni_salida");
+            
+            ## Portabilidad
+            $nrn_orig = '37';
+            $extension = $dni_salida;
+            $numero_traducido = $dni_salida;
+            if ($extension =~ m/^9/i) {		# Portabilidad Movil
+      		   $phone = $extension;
+      		   my $query = "SELECT nrn_receptor FROM numeros_portados WHERE telefono = ?";
+         	   my $sth = $dbp->prepare($query);
+         	   $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	   $data = $sth->fetch;
+         	   $nrn_dest = $data->[0];
+         	   if ($nrn_dest == null) {
+            	  $prefijo = substr($phone, 0, 5);
+            	  my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?"; 
+            	  my $sth = $dbp->prepare($query);
+            	  $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            	  $data = $sth->fetch;
+            	  $nrn_dest = $data->[0];
+            	  if ($nrn_dest == null) {
+	           		 $error_code = 'UNMATCHED';
+            	  }
+         	   }
+         	   $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+			} elsif (($extension =~ m/^0[1-8]/i) && (length($extension) == 9)) {
+      		   $phone = substr($extension, 1);
+      		   my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+         	   my $sth = $dbp->prepare($query);
+         	   $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	   $data = $sth->fetch;
+         	   $nrn_dest = $data->[0];
+         	   if ($nrn_dest == null) {
+            	  $prefijo = substr($phone, 0, 6);
+            	  my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+            	  my $sth = $dbp->prepare($query);
+            	  $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            	  $data = $sth->fetch;
+            	  $nrn_dest = $data->[0];
+            	  if ($nrn_dest == null) {
+	           	  	 $error_code = 'UNMATCHED';
+            	  }
+         	   }
+         	   $numero_traducido = $nrn_dest.$nrn_orig.$phone;	# Igual que el FIJO_WHOLESALE_MOD
+            } elsif (($extension =~ m/^[1-8]/i) && ((length($extension) == 6) || (length($extension) == 7))) {	# Portabilidad Local
+      		   if ($ani =~ m/^1/i) {
+         		  $area_code = '1';
+      		   } else {
+         		  $area_code = substr($ani, 0, 2);
+      		   }
+      		   $phone = $area_code.$extension;
+      		   my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+         	   my $sth = $dbp->prepare($query);
+         	   $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	   $data = $sth->fetch;
+         	   $nrn_dest = $data->[0];
+         	   if ($nrn_dest == null) {
+            	  $prefijo = substr($phone, 0, 6);
+            	  my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+            	  my $sth = $dbp->prepare($query);
+            	  $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            	  $data = $sth->fetch;
+            	  $nrn_dest = $data->[0];
+             	  if ($nrn_dest == null) {
+	           		 $error_code = 'UNMATCHED';
+            	  }
+         	   }
+         	   $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+			}
+            $dni_salida = $numero_traducido;
+            
+            $agi->set_variable('dni_salida', $dni_salida);
+			$self->log(2, "AGI: $agi_name: dni_salida: $dni_salida");
+			
+	    	#$error_code = $data->[0];
+            #$comment = $data->[1];
+                        
+            #$self->log(2, "dni_canonical $dni_canonical");
+            #$self->log(2, "dni_salida $dni_salida");
+            #$self->log(2, "rbz_carrierName $rbz_carrierName");
+            #$self->log(2, "rbz_timePeriod $rbz_timePeriod");
+            #$self->log(2, "rtt_carrierName $rtt_carrierName");
+            
+            #$self->log(2, "rtt_prefix $rtt_prefix");
+            #$self->log(2, "rtt_nbToRemove $rtt_nbToRemove");
+            #$self->log(2, "rtt_prefixToAdd $rtt_prefixToAdd");
+            #$self->log(2, "rtt_numberingPlan $rtt_numberingPlan");
+            #$self->log(2, "rtt_numberType $rtt_numberType");
+            #$self->log(2, "altc_carrierName $altc_carrierName");
+            #$self->log(2, "car_carriername $car_carriername");
+         } else {
+	    	$error_code = "NO_SALDO_AVAILABLE";
+            #$comment = "NO TIENE SALDO DISPONIBLE";
+         }
+         $agi->set_variable('errorCode',$error_code);
+         #$self->log(2, "Salida $error_code : $comment");
+      }
+   }
+   return($error_code);
+}

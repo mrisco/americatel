@@ -1,0 +1,133 @@
+use DBI;
+use DBI qw(:sql_types);
+
+$dbh = null;
+$dba = null;
+$dbb = null;
+
+sub igateway {
+  my $self = shift;
+  my $server_prop = $self->{server};
+  my $agi = $server_prop->{agi};
+  my $params = $agi->{params};
+  $dbh = $self->{server}{dbh};
+  $dba = $self->{server}{dba};
+  $dbb = $self->{server}{dbb};
+
+  $dbh->do("use HOST"); 
+  $dba->do("use AGENT"); 
+  $dbb->do("use BILLING"); 
+
+  my $number = $params->{'number'};
+
+  $agi->answer();
+  #$agi->say_digits($number);
+  #$agi->exec('Playback','bienvenido');
+  #$agi->exec('Playback','telefono_bloqueado');
+  #$agi->exec('Playback','ingrese_clave_acceso');
+  #$agi->exec('Playback','clave_incorrecta');
+  #$agi->exec('Playback','saldo_insuficiente');
+  #$agi->exec('Playback','ingrese_su_clave');
+  #$agi->exec('Playback','reingrese_numero_desea_llamar');
+  #$agi->hangup();
+
+  $fase_out_1 = $self->_igateway_fase_1();
+  $self->log(2, "Salida $fase_out_1");
+
+  if ($fase_out_1 eq "OK") {
+     $agi->exec('Playback','ingresar_clave');
+  } else {  
+     $agi->exec('Playback','error_conexion_llamada');
+  }
+
+  return(1);
+}
+
+sub _igateway_fase_1 {
+  # Lanzando el Store Procedure 1 ----------------------
+
+  # Parametros de Inicializacion
+  $switchNumber = 1;
+  $channelNumber = 2;
+  $did = "1977124";
+  $cli = "14368814";
+  $dni = "5625862600";
+  $numberingPlan = 1;
+  $numberType = 2;
+  $trunkName = "AM_IO";
+  $inUseSiteName = "AMP";
+  $tariffKind = "C   ";
+  $callingPartyCategory = 10;
+
+  my $sth = $dbh->prepare("exec NS_H_GET_INCALL_INF_CACHED_100 ?, ?, ?, ?, ?, ?, ?, ?");
+  $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+  $sth->bind_param(2, $channelNumber, SQL_INTEGER);
+  $sth->bind_param(3, $did, SQL_CHAR);
+  $sth->bind_param(4, $cli, SQL_CHAR);
+  $sth->bind_param(5, $numberingPlan, SQL_INTEGER);
+  $sth->bind_param(6, $numberType, SQL_INTEGER);
+  $sth->bind_param(7, $trunkName, SQL_CHAR);
+  $sth->bind_param(8, $callingPartyCategory, SQL_INTEGER);
+  $sth->execute;
+
+  # Salida del Store Procedure
+  $data = $sth->fetch;
+  
+  $cliKind = $data->[45];
+  $cliAfterRules = $data->[2];
+  $initialAccesType = $data->[19];
+  $familyName = $data->[30];
+  $destNbTtranslation = $data->[25];
+  $numberingPlanAfterRules = $data->[9];
+  $numberTypeAfterRules = $data->[10];
+  $calledPhone = $data->[16];
+  $singleAccProductName = $data->[31];
+  $singleAccBatchNumber = $data->[32];
+  $singleAccountSerialNumber = $data->[33];
+  $ChargeMode = $data->[40];
+  $accountIdMode = $data->[29];
+  $accountIdFamilyName = $data->[30];
+  $actionOnErrorWhenOnHook = $data->[23];
+  $serviceName = $data->[18];
+  $status = $data->[14];
+  $svr_name = $data->[38];
+  $error_code = $data->[0];
+  $comment = $data->[1];
+
+  if($error_code ="OK"){
+    my $sth = $dba->prepare("exec NS_N_GET_MULTI_CLI_ZONE_CLI_109 ?,?,?,?,?,?");
+    
+    $fp_pt_cliKind ="";
+    $isMultiCliRequired =1;
+
+    $sth->bind_param(1, $fp_pt_cliKind, SQL_CHAR);
+    $sth->bind_param(2, $cli, SQL_CHAR);
+    $sth->bind_param(3, $cliAfterRules, SQL_CHAR);
+    $sth->bind_param(4, $initialAccesType, SQL_CHAR);
+    $sth->bind_param(5, $familyName, SQL_CHAR);
+    $sth->bind_param(6, $isMultiCliRequired, SQL_INTEGER);
+
+    $sth->execute;
+    
+    $data = $sth->fetch;
+	
+    $nbOfMultiCli = $data->[2];
+    $muc_cli = $data->[3];
+    $muc_productName = $data->[4];
+    $muc_batchNumber = $data->[5];
+    $muc_serialNumber = $data->[6];
+    $muc_cliUserPin = $data->[7];
+    $zone_acessType = $data->[9];
+    $zone_isItPNB = $data->[10];
+    $zone_prefix = $data->[11];
+    $zone_modifiedAccessType = $data->[12];
+    $zone_zoneCli = $data->[13];
+    $zone_cliStatus = $data->[14];
+    $zone_timeOfLastPinFailure = $data->[15];
+    $zone_timeOfRecentPinFailure = $data->[16];
+    $error_code = $data->[0];
+    $comment = $data->[1];
+
+  }
+  return $error_code;
+}
