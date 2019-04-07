@@ -1,0 +1,314 @@
+use DBI;
+
+$dbh = null;	# descriptor base de datos HOST
+$dba = null;	# descriptor base de datos AGENT
+$dbp = null;	# descriptor base de datos PORTABILIDAD
+
+sub proceso_1577 {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $dbh = $self->{server}{dbh};
+   $dba = $self->{server}{dba};
+   $dbp = $self->{server}{dbp};
+
+   # Parametros de Inicializacion
+   my $agent = $params->{'agent'};
+#   my $pre_prod = $params->{'pre_prod'};
+#   $pre_prod //= '0';
+
+   $dbh->do("use HOST"); 
+   $dba->do("use $agent"); 
+   $dbp->do("use portabilidad");
+
+   $agi_name = "proceso_1577";
+   $numberType = 0;
+   $switchNumber = 1;
+   $numberingPlan = 0;
+   $tariffKind = "C";
+   $timePeriodClassName = "ALL";
+   $area_code = '';
+   $ani = $params->{'cli'};
+   $dni = $params->{'dni'};   
+   $didContent = $agi->get_variable('CDR(didContent)');
+   $calledPhoneNb = $agi->get_variable('CDR(calledPhoneNb)');
+   $tcl_tclassName = $agi->get_variable(tcl_tclassName);
+   $destNbTranslation = $agi->get_variable(destNbTranslation);
+   $zone_modifiedAccessType = $agi->get_variable(zone_modifiedAccessType);
+
+   $self->log(2, "AGI: $agi_name: =================================================================================================");
+   $self->log(2, "AGI: $agi_name: variables en sesion - agent: $agent - dni: $dni - ani: $ani - didContent: $didContent - calledPhoneNb: $calledPhoneNb");
+   $self->log(2, "AGI: $agi_name: variables en sesion - tcl_tclassName: $tcl_tclassName - destNbTranslation: $destNbTranslation - zone_modifiedAccessType: $zone_modifiedAccessType");
+   $self->log(2, "AGI: $agi_name: variables fijas - numberType: $numberType - numberingPlan: $numberingPlan - tariffKind: $tariffKind - switchNumber: $switchNumber - timePeriodClassName: $timePeriodClassName");
+
+   if ($agent eq 'AGENT_CFRAUDE') {
+      $numberingPlan = 1;
+      $numberType = 1;
+   } 
+
+   # VALIDACION INICIAL DE SALDO DISPONIBLE
+   $ivr_saldo_disponible = $agi->get_variable('CDR(saldo_disponible)');
+   $self->log(2, "AGI: $agi_name: saldo_disponible: $ivr_saldo_disponible");
+   if ($ivr_saldo_disponible == 0) {
+       $error_code = "NO_SALDO_AVAILABLE";
+       $agi->set_variable('errorCode', $error_code);
+       $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+       return($error_code);
+   }
+
+   # IVR_SERVICE: Requerido para CONSULTA DE SALDOS: OPCION *1
+   if ($dni eq '*1') {
+      $ivr_saldo_disponible = sprintf "%.2f", $ivr_saldo_disponible;
+      ($integer_part, $decimal_part) = split(/\./, $ivr_saldo_disponible);
+      $agi->exec(Playback, su_saldo_esde);
+      $agi->say_number($integer_part);
+      $agi->exec(Playback, nuevos_soles);     
+      if (int($decimal_part) > 0) { 
+         $agi->say_number($decimal_part);
+         $agi->exec(Playback, centimos);     
+      }
+      $error_code = "IVR_SERVICE";
+      $agi->set_variable('errorCode', $error_code);
+      $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+      return($error_code);
+   }
+
+   if (!($dni =~ /^[+-]?\d+$/)) {
+      $error_code = "NUMERO_NO_VALIDO";
+      $agi->set_variable('errorCode', $error_code);
+      $self->log(2, "AGI: $agi_name: finalizacion - errorCode: $error_code");
+      return($error_code);
+   }
+
+   # Lanzando el Store Procedure 1 ----------------------
+   $self->log(2, "AGI: $agi_name: SP 1 - exec NS_H_GET_RTE_ZRULES_110 \"$destNbTranslation\", \"$dni\", $numberingPlan, $numberType");
+   
+   my $sth = $dbh->prepare("exec NS_H_GET_RTE_ZRULES_110 ?,?,?,?");
+   $sth->bind_param(1, $destNbTranslation, SQL_CHAR);
+   $sth->bind_param(2, $dni, SQL_CHAR);
+   $sth->bind_param(3, $numberingPlan, SQL_INTEGER);
+   $sth->bind_param(4, $numberType, SQL_INTEGER);
+   $sth->execute;
+
+   # Salida del Store Procedure
+   $data = $sth->fetch;
+  
+   $translationName = $data->[2];
+   $trn_numberingPlan = $data->[3];
+   $trn_numberType = $data->[4];
+   $prefix = $data->[5];
+   $nbToRemove = $data->[6];
+   $nbPrefixToAdd = $data->[7];
+   $error_code = $data->[0];
+   $agi->set_variable('errorCode', $error_code);
+
+   $self->log(2, "AGI: $agi_name: SP 1 - translationName: $translationName - trn_numberingPlan: $trn_numberingPlan - trn_numberType: $trn_numberType - prefix: $prefix");
+   $self->log(2, "AGI: $agi_name: SP 1 - nbToRemove: $nbToRemove - nbPrefixToAdd $nbPrefixToAdd - errorCode $error_code");
+   
+   if ($error_code eq "OK") {
+      $dni_canonical = substr($dni, $nbToRemove);
+      $dni_canonical = $nbPrefixToAdd . $dni_canonical;
+      $agi->set_variable('dni_canonical', $dni_canonical);
+
+      # Lanzando el Store Procedure 2 ----------------------
+	  $self->log(2, "AGI: $agi_name: SP 2 - exec NS_N_GET_ZONE_AND_TARIFF_114 \"$tcl_tclassName\", \"$tariffKind\", \"$zone_modifiedAccessType\", \"$timePeriodClassName\", \"$dni_canonical\"");
+
+      my $sth = $dba->prepare("exec NS_N_GET_ZONE_AND_TARIFF_114 ?,?,?,?,?");                   
+      $sth->bind_param(1, $tcl_tclassName, SQL_CHAR);
+      $sth->bind_param(2, $tariffKind, SQL_CHAR);
+      $sth->bind_param(3, $zone_modifiedAccessType, SQL_CHAR);
+      $sth->bind_param(4, $timePeriodClassName, SQL_CHAR);
+      $sth->bind_param(5, $dni_canonical, SQL_CHAR);
+      $sth->execute;
+      
+      # Salida del Store Procedure
+      $data = $sth->fetch;
+
+      $tariff_idAccessType  = $data->[29];
+      $tariffTimePeriod  = $data->[30];
+      $tariffItem = $data->[31];
+      $tariff_value_tabTarperInf_0_sampDelayInSec = $data->[33];
+      $tariff_value_tabTarperInf_0_sampPrice = $data->[34];
+      $error_code = $data->[0];
+      
+      $agi->set_variable('tariffItem', $tariffItem);
+      $agi->set_variable('tariff_idAccessType', $tariff_idAccessType);
+      $agi->set_variable('errorCode', $error_code);
+      
+      $self->log(2, "AGI: $agi_name: SP 2 - tariffItem: $tariffItem - tariff_idAccessType: $tariff_idAccessType - tariffTimePeriod: $tariffTimePeriod");
+      $self->log(2, "AGI: $agi_name: SP 2 - tariff_value_tabTarperInf_0_sampDelayInSec: $tariff_value_tabTarperInf_0_sampDelayInSec - errorCode $error_code");
+      
+      if ($error_code eq "OK") {
+         $agi->set_variable('tariffTimePeriod', $tariffTimePeriod);
+         $agi->set_variable('sampDelayInSec', $tariff_value_tabTarperInf_0_sampDelayInSec);
+         $agi->set_variable('sampPrice', $tariff_value_tabTarperInf_0_sampPrice);
+         
+         $saldo_disponible = $agi->get_variable('CDR(saldo_disponible)');
+         $tarifa_sample = $tariff_value_tabTarperInf_0_sampPrice;
+                  
+         $agi->set_variable('tarifa_sample', $tarifa_sample);
+         $samples_disponibles = int($saldo_disponible / $tarifa_sample || 0);
+         
+         $agi->set_variable('samples_disponibles', $samples_disponibles);
+         $minutos_disponibles = int(($samples_disponibles * $tariff_value_tabTarperInf_0_sampDelayInSec / 60) || 0); 
+         
+         $agi->set_variable('minutos_disponibles',$minutos_disponibles);
+         
+         $self->log(2, "AGI: $agi_name: sampPrice: $tariff_value_tabTarperInf_0_sampPrice - samples_disponibles: $samples_disponibles - minutos_disponibles: $minutos_disponibles");
+ 		  
+         if ($samples_disponibles >= 1) {
+            #Para saber por donde enrutar la llamada
+            $tariffzoneorItem = "";
+            $fp_pt_routeClassForZone = "";            
+            $rtcl_routeClass = $agi->get_variable(rtcl_routeClass);
+            
+            #Se agrega el "0" antes del 1577 para evitar cruce con prefijos USA
+            if ($agent eq 'Agent_1577') {
+                $dni_canonical = '0' . $dni_canonical;
+            } 
+            
+            # Lanzando el Store Procedure 3 ----------------------
+            $self->log(2, "AGI: $agi_name: SP 3 - exec NS_H_GET_RTES_TRANS_RTE_ASLTCAR_110 \"$rtcl_routeClass\", \"$fp_pt_routeClassForZone\", \"$timePeriodClassName\", \"$dni_canonical\", \"$tariffzoneorItem\", \"$switchNumber\"");
+            
+            my $sth = $dbh->prepare("exec NS_H_GET_RTES_TRANS_RTE_ASLTCAR_110 ?,?,?,?,?,?"); 
+            $sth->bind_param(1, $rtcl_routeClass, SQL_CHAR);
+            $sth->bind_param(2, $fp_pt_routeClassForZone, SQL_CHAR);
+            $sth->bind_param(3, $timePeriodClassName, SQL_CHAR);
+            $sth->bind_param(4, $dni_canonical, SQL_CHAR);
+            $sth->bind_param(5, $tariffzoneorItem, SQL_CHAR);
+            $sth->bind_param(6, $switchNumber, SQL_CHAR);
+            $sth->execute;
+            
+            # Salida del Store Procedure            
+	    	$data = $sth->fetch;
+	        
+	        $error_code = $data->[0];
+	    	$rtt_carrierName= $data->[16];
+	    	$rtt_nbToRemove = $data->[18];
+	    	$rtt_prefixToAdd = $data->[19];
+	    	$car_carriername = $data->[35];
+
+            $dni_salida = $rtt_prefixToAdd.substr($dni_canonical, $rtt_nbToRemove);
+            
+            $self->log(2, "AGI: $agi_name: SP 3 - rtt_carrierName: $rtt_carrierName - rtt_nbToRemove: $rtt_nbToRemove - rtt_prefixToAdd: $rtt_prefixToAdd");
+            $self->log(2, "AGI: $agi_name: dni_canonical: $dni_canonical - dni_salida: $dni_salida - errorCode $error_code");
+            
+			# Consulta de Portabilidad
+			if ($error_code eq "OK") {
+			   $nrn_orig = '37';
+               $extension = $dni_salida;
+               $numero_traducido = $dni_salida;
+			   if ($extension =~ m/^15779/i) {		# Portabilidad Movil
+      		      $phone = substr($extension, 4);
+      		      my $query = "SELECT nrn_receptor FROM numeros_portados WHERE telefono = ?";
+         	      my $sth = $dbp->prepare($query);
+         	      $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	      $data = $sth->fetch;
+         	      $nrn_dest = $data->[0];
+         	      if ($nrn_dest == null) {
+            	     $prefijo = substr($phone, 0, 5);
+            	     my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?"; 
+            	     my $sth = $dbp->prepare($query);
+            	     $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            	     $data = $sth->fetch;
+            	     $nrn_dest = $data->[0];
+            	     if ($nrn_dest == null) {
+	           		    $error_code = 'UNMATCHED';
+            	     }
+         	      }
+         	      $numero_traducido = '1577'.$nrn_dest.$nrn_orig.$phone;
+			   } elsif ($extension =~ m/^15770[1-8]/i) {	# Portabilidad LDN
+			      $phone = substr($extension, 5);
+			      my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+         	      my $sth = $dbp->prepare($query);
+         	      $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	      $data = $sth->fetch;
+         	      $nrn_dest = $data->[0];
+         	      if ($nrn_dest == null) {
+            	     $prefijo = substr($phone, 0, 6);
+            	     my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+            	     my $sth = $dbp->prepare($query);
+            	     $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            	     $data = $sth->fetch;
+            	     $nrn_dest = $data->[0];
+             	     if ($nrn_dest == null) {
+	           		    $error_code = 'UNMATCHED';
+            	     }
+         	      }
+         	      ## Verificamos si el nrn_dest = 37, consultamos la base de datos de portabilidad centralizada
+         	      if ($error_code eq 'OK') {
+         	      	 #if (($nrn_dest == 37) && ($pre_prod ne '0')) {
+         	      	 if ($nrn_dest == 37) {
+         	      	 	my $query = "SELECT nrn_interno FROM numeracion_amp WHERE telefono = ?";
+         	      	 	my $sth = $dbp->prepare($query);
+         	      	 	$sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - ani: $phone");
+         	      	 	$data = $sth->fetch;
+         	      	 	$nrn_dest = $data->[0];
+         	      	 	if ($nrn_dest == null) {
+	                       $error_code = 'UNMATCHED';
+                        } else {
+                        	$numero_traducido = '1577'.$nrn_dest.$nrn_orig.$phone;
+                        }
+         	      	 } else {
+         	      	 	$numero_traducido = '1577'.$nrn_dest.$nrn_orig.$phone;
+         	      	 }
+         	      }
+			   } elsif (($extension =~ m/^1577[1-8]/i) && ((length($extension) == 10) || (length($extension) == 11))) {	# Portabilidad Local
+      		      if ($ani =~ m/^1/i) {
+         		     $area_code = '1';
+      		      } else {
+         		     $area_code = substr($ani, 0, 2);
+      		      }
+      		      $phone = $area_code.substr($extension, 4);
+      		      my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+         	      my $sth = $dbp->prepare($query);
+         	      $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	      $data = $sth->fetch;
+         	      $nrn_dest = $data->[0];
+         	      if ($nrn_dest == null) {
+            	     $prefijo = substr($phone, 0, 6);
+            	     my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+            	     my $sth = $dbp->prepare($query);
+            	     $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            	     $data = $sth->fetch;
+            	     $nrn_dest = $data->[0];
+             	     if ($nrn_dest == null) {
+	           		    $error_code = 'UNMATCHED';
+            	     }
+         	      }
+         	      ## Verificamos si el nrn_dest = 37, consultamos la base de datos de portabilidad centralizada
+         	      if ($error_code eq 'OK') {
+         	      	 #if (($nrn_dest == 37) && ($pre_prod ne '0')) {
+         	      	 if ($nrn_dest == 37) {
+         	      	 	my $query = "SELECT nrn_interno FROM numeracion_amp WHERE telefono = ?";
+         	      	 	my $sth = $dbp->prepare($query);
+         	      	 	$sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - ani: $phone");
+         	      	 	$data = $sth->fetch;
+         	      	 	$nrn_dest = $data->[0];
+         	      	 	if ($nrn_dest == null) {
+	                       $error_code = 'UNMATCHED';
+                        } else {
+                        	$numero_traducido = '1577'.$nrn_dest.$nrn_orig.$phone;
+                        }
+         	      	 } else {
+         	      	 	$numero_traducido = '1577'.$nrn_dest.$nrn_orig.$phone;
+         	      	 }
+         	      }
+			   }
+			
+			   $dni_salida = $numero_traducido;
+
+               $agi->set_variable('car_carriername', $car_carriername);
+		       $agi->set_variable('ruta_salida', $rtt_carrierName);            
+               $agi->set_variable('dni_salida', $dni_salida);
+               $self->log(2, "AGI: $agi_name: dni_salida: $dni_salida");
+			}
+         } else {
+	    	$error_code = "NO_SALDO_AVAILABLE";
+         }
+         $agi->set_variable('errorCode', $error_code);
+      }
+   }
+   return($error_code);
+}

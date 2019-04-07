@@ -1,0 +1,65 @@
+use DBI;
+
+$dbp = null;		# descriptor base de datos PORTABILIDAD
+
+sub validacion_ani {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $dbp = $self->{server}{dbp};
+   
+   # Parametros de Inicializacion
+   my $dni = $params->{'did'};
+   my $ani = $params->{'cli'};
+   
+   $dbp->do("use portabilidad");
+   
+   # Parametros de Inicializacion
+   $agi_name = "validacion_ani";
+   $errorCode = 'OK';
+   
+   #
+   # Regla de bloqueo de llamadas con ANI origen CLARO fijo provincias
+   #
+   if (($ani =~ m/^[2-8]/i) && (length($ani) == 8)) {		## Fijo - Origen Provincias
+      
+      #
+      # Obtencion del codigo nrn en de la base de datos de portabilidad
+      #
+      my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+      my $sth = $dbp->prepare($query);
+      $sth->execute($ani) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $ani");
+      $data = $sth->fetch;   
+      $nrn_dest = $data->[0];
+      if ($nrn_dest == null) {
+         $prefijo = substr($ani, 0, 6);
+         my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+         my $sth = $dbp->prepare($query);
+         $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+         $data = $sth->fetch;
+         $nrn_dest = $data->[0];
+         if ($nrn_dest == null) {
+	        $errorCode = 'UNMATCHED';
+         }
+      }
+      
+      #
+      # Validacion del origen CLARO basado en el codigo nrn de portabilidad
+      #
+      if ($errorCode eq 'OK') {
+         if ($nrn_dest == 21) {
+         	$errorCode = 'BLOCK';
+         }
+      }
+      
+      $self->log(2, "AGI: $agi_name: =================================================================================================");
+      $self->log(2, "AGI: $agi_name: variables en sesion - dni: $dni - ani: $ani ");
+      $self->log(2, "AGI: $agi_name: portabilidad - nrn_dest: $nrn_dest - errorCode: $errorCode ");
+      $self->log(2, "AGI: $agi_name: =================================================================================================");
+   }
+   
+   $agi->set_variable('errorCode', $errorCode);
+
+   return(1);
+}

@@ -1,0 +1,195 @@
+use DBI;
+
+$db_mssql = null;
+$db_mysql = null;
+
+sub validacion_bun {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $db_host = $self->{server}{dbh};
+   $db_mssql = $self->{server}{dba};
+   $db_mysql = $self->{server}{dbmynsoft};
+
+   my $agent = $params->{'agent'};
+
+   $db_host->do("use HOST"); 
+   $db_mssql->do("use $agent"); 
+
+   # Parametros de Inicializacion
+   my $numberingPlan = 0;
+   my $numberType = 0;
+   my $did = $params->{'did'};
+   my $cli = $params->{'cli'};
+   my $trunkName = $params->{'trunkName'};
+   my $switchNumber = $params->{'switchNumber'};
+   my $channelNumberIn = $params->{'channelNumberIn'};
+   my $number_plan = '1577125';
+
+   $did =~ s/$number_plan/1577/;
+   $dni = $did;
+
+   ## Verificacion de Planes Flexibles / Control
+   $self->log(2, "Validacion_bun: did $did -- cli $cli");
+
+   # Lanzando el Store Procedure 1 ----------------------
+   my $sth = $db_host->prepare("exec NS_H_GET_INCALL_INF_CACHED_100 ?, ?, ?, ?, ?, ?, ?, ?");
+   $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+   $sth->bind_param(2, $channelNumberIn, SQL_INTEGER);
+   $sth->bind_param(3, $did, SQL_CHAR);
+   $sth->bind_param(4, $cli, SQL_CHAR);
+   $sth->bind_param(5, $numberingPlan, SQL_INTEGER);
+   $sth->bind_param(6, $numberType, SQL_INTEGER);
+   $sth->bind_param(7, $trunkName, SQL_CHAR);
+   $sth->bind_param(8, $callingPartyCategory, SQL_INTEGER);
+   $sth->execute;
+
+   # Salida del Store Procedure
+   $data = $sth->fetch;
+   $accountIdMode = $data->[29];
+   $destNbTranslation = $data->[25];
+   $didContent = $data->[15];
+   $calledPhone = $data->[16];
+   $error_code = $data->[0];
+
+   $self->log(2, "Validacion_bun: accountIdMode $accountIdMode -- destNbTranslation $destNbTranslation -- didContent $didContent -- calledPhone $calledPhone");
+
+   # Lanzando el Store Procedure 2 ----------------------
+   my $sth = $db_host->prepare("exec NS_H_GET_RTE_ZRULES_110 ?,?,?,?");
+   $sth->bind_param(1, $destNbTranslation, SQL_CHAR);
+   $sth->bind_param(2, $dni, SQL_CHAR);
+   $sth->bind_param(3, $numberingPlan, SQL_INTEGER);
+   $sth->bind_param(4, $numberType, SQL_INTEGER);
+   $sth->execute;
+
+   # Salida del Store Procedure
+   $data = $sth->fetch;
+   $error_code = $data->[0];
+   $nbPrefixToAdd = $data->[7];
+   $nbToRemove = $data->[6];
+   $agi->set_variable('errorCode',$error_code);
+
+   ## Verifico si el cli esta presente en la tabla multi_cli
+   my $sth = $db_mssql->prepare("select count(*) from multi_cli where cli = ?");
+   $sth->execute($cli);
+   $data = $sth->fetch;
+   $count = $data->[0];
+   if ($count == 0) {
+      $error_code = 'PARAM_MISSING';
+   }
+
+
+   if ($error_code eq "OK") {
+      if ($didContent eq 'A') {
+         $dni_canonical = $nbPrefixToAdd . substr($dni,length($calledPhone));
+      } else {
+         $dni_canonical = $nbPrefixToAdd . substr($dni,$nbToRemove);
+      }
+
+      $self->log(2, "Validacion_bun: dni_canonical $dni_canonical");
+      
+      # Obteniendo el TariffClassName - TC
+      my $sth = $db_mssql->prepare("select b.tclassName from batch a, batch_property b, multi_cli c where a.propertyName = b.propertyName and c.productName = a.baid_productName and c.cli = ?");
+      $sth->execute($cli);
+      $data = $sth->fetch;
+      $tclass = $data->[0];
+
+      # Obteniendo la tarifa del destino
+      my $sth = $db_mssql->prepare("select a.tinf_sampPrice0, a.tinf_sampDelayInSec0 from tariff_v2 a, zone b where a.tclassName = ? and a.accessTypeName = 'Regular' and a.kind = 'C' and a.timePeriod = 'ALL' and a.zoneOrItem = b.zoneName and ? LIKE (b.prefix + '%')");
+      $sth->execute($tclass, $dni_canonical);
+      $data = $sth->fetch;
+
+      $tarifa_sample = $data->[0];
+      $tarifa_secs = $data->[1];
+
+      $self->log(2, "Validacion_bun: tclass $tclass -- tarifa_sample $tarifa_sample -- tarifa_secs $tarifa_secs");
+      if (($tarifa_sample == null) || ($tarifa_secs == null)) {
+	 $error_code = 'PARAM_MISSING';
+      } else {
+	 $error_code = 'OK';
+      }
+      
+      $self->log(2, "Validacion_bun: error_code $error_code");
+
+      if ($error_code eq 'OK') {
+         # Actualizacion de saldos a fin de mes - Innovate - 08/09/13
+         my (undef, undef, undef, undef, $month, undef) = localtime();
+         $month += 1;
+         my $sth = $db_mssql->prepare("select b.acid_productName, b.acid_batchNumber, b.acid_serialNumber, b.finf_all_curMonth from multi_cli a, account b where b.acid_productName = a.productName and b.acid_batchNumber = a.batchNumber and b.acid_serialNumber = a.serialNumber and a.cli = ?");
+         $sth->execute($cli);
+         $data = $sth->fetch;
+
+         $acc_acid_productName = $data->[0];
+         $acc_acid_batchNumber = $data->[1];
+         $acc_acid_serialNumber = $data->[2];
+         $curMonth = $data->[3];
+         if (($accountIdMode ne "P") && ($curMonth != $month)){
+            my $sth = $db_mssql->prepare("UPDATE account SET finf_all_curMonthlyConsumption=0.00000000, finf_all_curMonth=? WHERE acid_productName=? and acid_batchNumber=? and acid_serialNumber=?");
+	    $sth->execute($month, $acc_acid_productName, $acc_acid_batchNumber, $acc_acid_serialNumber);
+         }
+         #$self->log(2, "Validacion_bun: Innovate - month $month - curMonth $curMonth - acc_acid_productName $acc_acid_productName - acc_acid_batchNumber $acc_acid_batchNumber - acc_acid_serialNumber $acc_acid_serialNumber");
+
+         # Fin de actualizacion de saldos a fin de mes - Innovate - 08/09/13
+
+         # my $sth = $db_mssql->prepare("select productName, cliUserPin from multi_cli where cli = ?");
+         my $sth = $db_mssql->prepare("select a.productName, a.cliUserPin, b.finf_prep_RemainCredit as saldo_disponible_1, b.finf_all_monthlyLimit - b.finf_all_curMonthlyConsumption as saldo_disponible_2, case when b.lastUsageDate is null then 'Y' else 'N' end as firstUsage from multi_cli a, account b where b.acid_productName = a.productName and b.acid_batchNumber = a.batchNumber and b.acid_serialNumber = a.serialNumber and a.cli = ?");
+         $sth->execute($cli);
+         $data = $sth->fetch;
+
+         $productName = $data->[0];
+         $cliUserPin = $data->[1];
+         $saldo_disponible_1 = $data->[2];
+         $saldo_disponible_2 = $data->[3];
+         $firstUsage = $data->[4];
+
+         my $sth = $db_mysql->prepare("select tipo_plan from rango_planes where cast(? as UNSIGNED) >=  cast(SUBSTRING_INDEX(rango, '-',1) as UNSIGNED) and cast(? as UNSIGNED) <=  cast(SUBSTRING_INDEX(rango, '-',-1) as UNSIGNED)");
+         $sth->execute($productName, $productName);
+         $data = $sth->fetch;
+
+         $tipo_plan = $data->[0];
+         $error_code = 'OK';
+         if ($tipo_plan =~ m/control/i) {
+            $tipo_plan = 'C';
+         } elsif ($tipo_plan =~ m/flexible/i) {
+            $tipo_plan = 'A';
+         } else {
+            # No importa la variable $tipo_plan
+            $tipo_plan = 'X';
+            $error_code = 'PARAM_MISSING';
+         }
+         if ($accountIdMode eq "P") {
+            $saldo_disponible = $saldo_disponible_1;
+         } else {
+            $saldo_disponible = $saldo_disponible_2;
+         }
+         $saldo_disponible_redondeado = sprintf("%.2f",$saldo_disponible);
+         my @saldo = split(/\./,$saldo_disponible_redondeado);
+         my $saldo_soles = int($saldo[0] || 0);
+         my $saldo_centimos = int($saldo[1] || 0);
+         $samples_disponibles = int($saldo_disponible / $tarifa_sample || 0);
+         $minutos_disponibles = int(($samples_disponibles * $tarifa_secs / 60) || 0);
+         $self->log(2, "Validacion_bun: productName $productName -- tipo_plan $tipo_plan -- cliUserPin $cliUserPin -- did $did -- firstUsage $firstUsage -- saldo_disponible $saldo_disponible -- minutos_disponibles $minutos_disponibles -- saldo_soles $saldo_soles -- saldo_centimos $saldo_centimos");
+
+         if ($error_code eq 'OK') {
+            if ($cliUserPin == null) {
+   	       $agi->set_variable('hasUserPin','N');
+            } else {
+	       $agi->set_variable('hasUserPin','Y');
+	       $agi->set_variable('cliUserPin',$cliUserPin);
+            }
+         }
+
+         $agi->set_variable('did',$did);
+         $agi->set_variable('tipo_plan',$tipo_plan);
+         $agi->set_variable('errorCode',$error_code);
+         $agi->set_variable('firstUsage',$firstUsage);
+         $agi->set_variable('saldo_soles',$saldo_soles);
+         $agi->set_variable('saldo_centimos',$saldo_centimos);
+         $agi->set_variable('saldo_disponible',$saldo_disponible);
+         $agi->set_variable('minutos_disponibles',$minutos_disponibles);
+      }
+   }
+   $agi->set_variable('errorCode',$error_code);
+   return($error_code);
+}
