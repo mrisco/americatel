@@ -1,0 +1,571 @@
+use DBI;
+use DBI qw(:sql_types);
+use POSIX qw/strftime/;
+
+$dbh = null;
+$dba = null;
+
+sub stopro {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $dbh = $self->{server}{dbh};
+   $dba = $self->{server}{dba};
+   $dbb = $self->{server}{dbb};
+
+   my $agent = $params->{'agent'};
+   my $billing = $params->{'billing'};
+
+   $dbh->do("use HOST"); 
+   $dba->do("use $agent"); 
+   $dbb->do("use $billing"); 
+
+   my $inUseSiteName = "AMP";
+   my $did = $params->{'did'};
+   my $billing = $params->{'billing'};
+   my $switchNumber = $params->{'switchNumber'};
+   my $channelNumberOut = $params->{'channelNumberOut'};
+   my $channelOut = $params->{'channelOut'};
+   if ($channelOut =~ m/DAHDI\/(\d+)\-/) {
+       $channelNumberOut = $1;
+   }
+   my $cli = $params->{'cli'};
+   my $inicio_llamada = $params->{'inicio'};
+   my $trunkName = $params->{'trunkName'};
+   my $duracion = $params->{'duracion'};
+   my $billsec = $params->{'billsec'};
+   my $answer = $params->{'answer'};
+   my $callDurationIn = $params->{'duration-callin'};
+   my $telecomResult = $params->{'telecomResult'};
+   my $fp_telecomResult = $params->{'releaseCause'};
+   my $callID = $params->{'callID'};
+   my $fp_callCharge = 0;
+
+   my $familyName = $agi->get_variable('CDR(familyName)');
+   $self->log(2, "familyName $familyName");
+
+   $self->log(2, "AGI billing.sam: agent $agent");
+   $self->log(2, "AGI billing.sam: billing $billing");
+   $self->log(2, "AGI billing.sam: cli $cli");
+   $self->log(2, "AGI billing.sam: inicio_llamada $inicio_llamada");
+   $self->log(2, "AGI billing.sam: trunkName $trunkName");
+   $self->log(2, "AGI billing.sam: billsec $billsec");
+   $self->log(2, "AGI billing.sam: fp_telecomResult $telecomResult");
+   $self->log(2, "AGI billing.sam: callID $callID");
+   $self->log(2, "AGI billing.sam: familyName $familyName");
+
+   $tariffTimePeriod = $agi->get_variable(tariffTimePeriod);
+   $fp_tariffItem = $agi->get_variable(tariffItem);
+   $self->log(2, "billing: fp_tariffItem $fp_tariffItem");
+   $fp_timeTariff_tclassName = $agi->get_variable(tcl_tclassName);
+   $self->log(2, "billing: fp_timeTariff_tclassName $fp_timeTariff_tclassName");
+
+   $sampDelayInSec = $agi->get_variable(sampDelayInSec);
+   $self->log(2, "AGI billing.sam: sampDelayInSec $sampDelayInSec");
+
+   $sampPrice = $agi->get_variable(sampPrice);
+   $self->log(2, "AGI billing.sam: sampPrice $sampPrice");
+
+   $car_carriername = $agi->get_variable(car_carriername);
+   $self->log(2, "car_carriername $car_carriername");
+
+   $channelNumberIn = $agi->get_variable(channelNumberIn);
+   $self->log(2, "channelNumberIn $channelNumberIn");
+
+   $cliKind = $agi->get_variable(cliKind);
+   $self->log(2, "cliKind $cliKind");
+
+   $initialAccesType = $agi->get_variable(initialaccesType);
+   $self->log(2, "initialAccesType $initialAccesType");
+
+   $accountIdMode = $agi->get_variable('CDR(accountIdMode)');
+   $self->log(2, "accountIdMode $accountIdMode");
+
+   $saldo_disponible = $agi->get_variable('CDR(saldo_disponible)');
+   $self->log(2, "saldo_disponible $saldo_disponible");
+
+   $curMonthlyConsumption = $agi->get_variable('CDR(curMonthlyConsumption)');
+   $self->log(2, "curMonthlyConsumption $curMonthlyConsumption");
+
+   $monthlyLimit = $agi->get_variable('CDR(monthlyLimit)');
+   $self->log(2, "monthlyLimit $monthlyLimit");
+
+   $dni_canonical = $agi->get_variable(dni_canonical);
+   $self->log(2, "dni_canonical $dni_canonical");
+   $dni_salida = $agi->get_variable(dni_salida);
+   $self->log(2, "dni_salida $dni_salida");
+   $tariffTimePeriod = $agi->get_variable(tariffTimePeriod);
+   $self->log(2, "tariffTimePeriod $tariffTimePeriod");
+   $fam_agent_id = $agi->get_variable(fam_agent_id);
+	         
+   my $fp_callDuration = 0;
+   my $fp_callDurationOut = 0;
+   my $fp_callDurationIn = 0;
+
+   if ($telecomResult ne 'FORCED') {
+      my $sth = $dbh->prepare("exec NS_H_WSALE_CHARGE_AGENT_IN_AND_OUT_122 ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?");
+	                    
+      $fp_useWsaleOutTariff = 0;
+      $fp_pt_wotWsaleTclassName="";
+      $fp_periodDuration = 3600;
+      $fp_adapterKind =1; 
+      $fp_adapterNumber=$channelNumberOut; 
+
+      if ($telecomResult eq "ANSWER") {
+         $fp_callDuration = $billsec;
+         $fp_callDurationOut = $billsec;
+      }
+      $fp_callDurationIn = $callDurationIn;
+      $fp_dialingDuration = $duracion - ($callDurationIn + $fp_callDurationOut);
+      $fp_countOfSuccessfulCalls = 1;
+
+      $fp_pt_cliKindStr = "NORMAL";
+      $fp_incomingCallChargedAmount= 0;
+	                    
+      $sth->bind_param(1, $fp_useWsaleOutTariff, SQL_INTEGER);
+      $sth->bind_param(2, $fp_pt_wotWsaleTclassName, SQL_CHAR);
+      $sth->bind_param(3, $car_carriername, SQL_CHAR);
+      $sth->bind_param(4, $car_carriername, SQL_CHAR);
+      $sth->bind_param(5, $dni_canonical, SQL_CHAR);
+      $sth->bind_param(6, $tariffTimePeriod, SQL_CHAR);
+      $sth->bind_param(7, $fam_agent_id, SQL_CHAR);
+      $sth->bind_param(8, $fp_periodDuration, SQL_INTEGER);
+      $sth->bind_param(9,  $switchNumber, SQL_INTEGER);
+      $sth->bind_param(10, $fp_adapterKind, SQL_CHAR);
+      $sth->bind_param(11, $fp_adapterNumber, SQL_INTEGER);
+      $sth->bind_param(12, $fp_dialingDuration, SQL_INTEGER);
+      $sth->bind_param(13, $fp_telecomResult, SQL_INTEGER);
+      $sth->bind_param(14, $fp_callDurationOut, SQL_INTEGER);
+      $sth->bind_param(15, $fp_callDurationIn, SQL_INTEGER);
+      $sth->bind_param(16, $initialAccesType, SQL_CHAR);
+      $sth->bind_param(17, $cliKind, SQL_CHAR);
+      $sth->bind_param(18, $fp_pt_cliKindStr, SQL_CHAR);
+      $sth->bind_param(19, $fp_incomingCallChargedAmount, SQL_INTEGER);
+      $self->log(2, "fp_useWsaleOutTariff $fp_useWsaleOutTariff");
+      $self->log(2, "fp_pt_wotWsaleTclassName $fp_pt_wotWsaleTclassName");
+      $self->log(2, "car_carriername $car_carriername");
+      $self->log(2, "dni_canonical $dni_canonical");
+      $self->log(2, "tariffTimePeriod $tariffTimePeriod");
+      $self->log(2, "fam_agent_id $fam_agent_id");
+      $self->log(2, "fp_periodDuration $fp_periodDuration");
+      $self->log(2, "switchNumber $switchNumber");
+      $self->log(2, "fp_adapterKind $fp_adapterKind");
+      $self->log(2, "fp_adapterNumber $fp_adapterNumber");
+      $self->log(2, "fp_dialingDuration $fp_dialingDuration");
+      $self->log(2, "fp_telecomResult $fp_telecomResult");
+      $self->log(2, "fp_callDurationOut $fp_callDurationOut");
+      $self->log(2, "fp_callDurationIn $fp_callDurationIn");
+      $self->log(2, "initialAccesType $initialAccesType");
+      $self->log(2, "cliKind $cliKind");
+      $self->log(2, "fp_pt_cliKindStr $fp_pt_cliKindStr");
+      $self->log(2, "fp_incomingCallChargedAmount $fp_incomingCallChargedAmount");
+                        
+      $sth->execute;
+      $data = $sth->fetch;
+                         
+      $error_code = $data->[0];
+      $comment = $data->[1];
+      $outparam_out_charge = $data->[2];
+      $wtc_out_currency = $data->[3];
+      $wsale_zone = $data->[4];
+			    
+      $self->log(2, "error_code $error_code, comment: $comment");
+
+      if($error_code eq "OK"){
+         $acc_acid_productName = $agi->get_variable(acid_productName);
+         $acc_acid_batchNumber = $agi->get_variable(acc_acid_batchNumber);
+         $acc_acid_serialNumber = $agi->get_variable(acc_acid_serialNumber);
+         $tarifa_sample = $agi->get_variable(tarifa_sample);
+         $bpty_billMode = $agi->get_variable(bpty_billMode);
+         if ($telecomResult eq "ANSWER") {
+            $fp_callCharge = int(($fp_callDuration + $sampDelayInSec) / $sampDelayInSec) * $tarifa_sample;
+         }
+         my $sth = $dba->prepare("exec NS_N_CHARGE_ACC_107 ?, ?, ?, ?, ?");
+         $sth->execute($acc_acid_productName,$acc_acid_batchNumber,$acc_acid_serialNumber,$bpty_billMode,$fp_callCharge);
+         $data = $sth->fetch;
+         $fp_callCharge = $data->[2];
+         $acc_finf_prep_RemainCredit = $data->[3];
+         $self->log(2, "acc_finf_prep_RemainCredit $acc_finf_prep_RemainCredit");
+         $acc_finf_all_curMonthlyConsumption = $data->[4];
+         $self->log(2, "acc_finf_all_curMonthlyConsumption $acc_finf_all_curMonthlyConsumption");
+         $acc_finf_all_totalConsumption = $data->[5];
+
+         $error_code = $data->[0];
+         $comment = $data->[1];
+ 
+         $self->log(2, "NS_N_CHARGE_ACC_107: error_code $error_code, comment: $comment");
+
+         if($error_code eq "OK"){
+            my $sth = $dbb->prepare("exec NS_B_INSERT_BILLING_AND_PROFIT_136 ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?");
+            $fp_timeOfBilling = $inicio_llamada;
+            $fp_origination = "S";
+            $fp_originationInstance = "1";
+            $fp_sessionId = $callID;
+            $fp_subSessionId = 1;
+            $fp_chargedDurationInSec = $fp_callDuration;
+            $fp_credit  = 0;
+            $fp_distributionCost   = 0;
+            $fp_costInVAT          = 0;
+            $fp_costOutVAT  = 0;
+            $fp_accountPin ="";
+            $fp_previousBalance = $curMonthlyConsumption;
+            $self->log(2, "fp_previousBalance: $fp_previousBalance");
+            $fp_newBalance = $fp_callCharge + $curMonthlyConsumption;
+            $self->log(2, "fp_newBalance: $fp_newBalance");
+            $fp_invoiceId = 0;
+            $fp_customerName ="";
+            $fp_distributionCommissionPercentage= 0;
+            if ($telecomResult eq "ANSWER") {
+               $fp_billingType = "S";
+            }
+            else {
+               $fp_billingType = "U";
+            }
+            $fp_serviceName ="COU";
+            $fp_serviceExternalRef = "";        
+            $fp_call_in_dev_netName = "";
+            $fp_call_in_dev_subNetName = "";
+            $fp_call_in_dev_deviceName = "";
+
+            $fp_call_in_dev_deviceAddressKind = "U";
+            $fp_call_in_dev_deviceAddress  = "";
+            $fp_call_out_outgoingLocation_switchNumber = 1;
+            $fp_call_out_outgoingLocation_channelNumber = $channelNumberOut;
+         
+            $fp_call_out_dialingDurationInSec = $fp_dialingDuration;
+
+            $fp_call_out_carrierUseCause = "B";
+            $fp_call_out_routePriority = 1;
+            $fp_noCall_login = "";        
+            $fp_noCall_comment = "";
+
+            $fp_accessPrice0 = 0;
+            $fp_sampDelayInSec = $sampDelayInSec;
+            $fp_sampPrice0 = $sampPrice;
+            $self->log(2, "NS_B_INSERT_BILLING_AND_PROFIT_136: fp_sampPrice0: $fp_sampPrice0");
+            $fp_nmaxSamples0 = 0;
+            $fp_accessPrice1= 0;
+            $fp_sampDelayInSec1 = 0;
+            $fp_sampPrice1 = 0;
+            $fp_nmaxSamples1= 0;
+            $fp_accessPrice2 = 0;
+            $fp_sampDelayInSec2= 0;
+            $fp_sampPrice2= 0;
+            $fp_nmaxSamples2=0;
+            $fp_accessPrice3=0;
+            $fp_sampDelayInSec3 = 0;
+            $fp_sampPrice3 = 0;
+            $fp_nmaxSamples3 = 0;
+            $fp_accessPrice4=0;
+            $fp_sampDelayInSec4 = 0;
+            $fp_sampPrice4= 0;
+            $fp_nmaxSamples4=0;
+            $fp_accessPrice5= 0;
+            $fp_sampDelayInSec5= 0;
+            $fp_sampPrice5 = 0;
+            $fp_nmaxSamples5= 0;
+            $fp_accessPrice6 = 0;
+            $fp_sampDelayInSec6 = 0;
+            $fp_sampPrice6= 0;
+            $fp_nmaxSamples6 = 0;
+            $fp_accessPrice7 = 0;
+            $fp_sampDelayInSec7= 0;
+            $fp_sampPrice7= 0;
+            $fp_nmaxSamples7=0;
+            $fp_endCallChargeIfPossible= 0;
+            $fp_eccTimeGuard = 0;
+
+            $fp_periodDuration = 3600;
+
+            $fp_userDefinedStr= "";
+            $fp_skipInsertBilling = 0;
+
+            $fp_ignoreBatchInProfit  = 1;
+            $tabla_billing = strftime('billing_%Y%m',localtime);
+            $self->log(2, "NS_B_INSERT_BILLING_AND_PROFIT_136: tabla_billing: $tabla_billing");
+            $fp_billingTableName = $tabla_billing;
+
+            $sth->bind_param(1, $fp_timeOfBilling , SQL_CHAR);
+            $sth->bind_param(2, $inUseSiteName , SQL_CHAR);
+            $sth->bind_param(3, $fp_origination, SQL_CHAR);
+            $sth->bind_param(4, $fp_originationInstance, SQL_CHAR);
+            $sth->bind_param(5, $fp_sessionId, SQL_INTEGER);
+            $sth->bind_param(6, $fp_subSessionId, SQL_INTEGER);
+            $tariff_idAccessType = $agi->get_variable(tariff_idAccessType);
+            $sth->bind_param(7, $tariff_idAccessType, SQL_CHAR);
+            $tcl_currencyName = $agi->get_variable(tcl_currencyName);
+            $sth->bind_param(8, $tcl_currencyName, SQL_CHAR);
+            $sth->bind_param(9, $fp_telecomResult, SQL_INTEGER);
+            $sth->bind_param(10, $fp_chargedDurationInSec, SQL_INTEGER);
+            $sth->bind_param(11, $fp_callCharge ,SQL_DOUBLE);
+            $sth->bind_param(12, $fp_credit ,SQL_DOUBLE);
+            $sth->bind_param(13, $fp_distributionCost ,SQL_DOUBLE);
+            $sth->bind_param(14, $fp_costInVAT ,SQL_DOUBLE);
+            $sth->bind_param(15, $fp_costOutVAT ,SQL_DOUBLE);
+            $sth->bind_param(16, $acc_acid_productName, SQL_CHAR );
+            $sth->bind_param(17, $acc_acid_batchNumber, SQL_INTEGER );
+            $sth->bind_param(18, $acc_acid_serialNumber, SQL_INTEGER );
+            $sth->bind_param(19, $familyName, SQL_CHAR);
+            $sth->bind_param(20, $fp_accountPin, SQL_CHAR);
+            $sth->bind_param(21, $bpty_billMode, SQL_CHAR);
+            $self->log(2,"NS_B_INSERT_BILLING_AND_PROFIT_136: bpty_billMode: $bpty_billMode");
+            $sth->bind_param(22, $fp_previousBalance ,SQL_DOUBLE);
+            $sth->bind_param(23, $fp_newBalance ,SQL_DOUBLE);
+            $sth->bind_param(24, $fp_invoiceId, SQL_INTEGER);
+            $sth->bind_param(25, $fp_customerName, SQL_CHAR);
+            $sth->bind_param(26, $fp_distributionCommissionPercentage, SQL_INTEGER);
+            $sth->bind_param(27, $wsale_zone, SQL_CHAR);
+            $sth->bind_param(28, $tariffTimePeriod, SQL_CHAR);
+            $sth->bind_param(29, $cliKind, SQL_CHAR);
+            $sth->bind_param(30, $fp_billingType, SQL_CHAR );
+            $sth->bind_param(31, $fp_serviceName, SQL_CHAR);
+            $sth->bind_param(32, $fp_serviceExternalRef, SQL_CHAR);
+            $sth->bind_param(33, $channelNumberIn, SQL_INTEGER);
+            $sth->bind_param(34, $trunkName, SQL_CHAR);
+            $sth->bind_param(35, $did, SQL_CHAR);
+            $sth->bind_param(36, $cli);
+            $sth->bind_param(37, $fp_callDurationIn, SQL_INTEGER);
+            $sth->bind_param(38, $fp_call_in_dev_netName, SQL_CHAR);
+            $sth->bind_param(39, $fp_call_in_dev_subNetName, SQL_CHAR);
+            $sth->bind_param(40, $fp_call_in_dev_deviceName, SQL_CHAR);
+            $sth->bind_param(41, $fp_call_in_dev_deviceAddressKind, SQL_CHAR) ;
+            $sth->bind_param(42, $fp_call_in_dev_deviceAddress, SQL_CHAR);
+            $sth->bind_param(43, $inUseSiteName, SQL_CHAR);
+            $sth->bind_param(44, $fp_call_out_outgoingLocation_switchNumber, SQL_INTEGER);
+            $sth->bind_param(45, $fp_call_out_outgoingLocation_channelNumber, SQL_INTEGER);
+            $sth->bind_param(46, $dni_canonical, SQL_CHAR);
+            $sth->bind_param(47, $fp_call_out_dialingDurationInSec, SQL_INTEGER);
+            $sth->bind_param(48, $car_carriername, SQL_CHAR);
+            $sth->bind_param(49, $fp_call_out_carrierUseCause, SQL_CHAR);
+            $sth->bind_param(50, $fp_call_out_routePriority, SQL_INTEGER);
+            $sth->bind_param(51, $fp_noCall_login, SQL_CHAR);
+            $sth->bind_param(52, $fp_noCall_comment, SQL_CHAR);
+            $sth->bind_param(53, $fp_tariffItem, SQL_CHAR );
+            $sth->bind_param(54, $fp_timeTariff_tclassName, SQL_CHAR );
+            $sth->bind_param(55, $tariffTimePeriod, SQL_CHAR );
+            $sth->bind_param(56, $fp_accessPrice0, SQL_INTEGER);
+            $sth->bind_param(57, $fp_sampDelayInSec, SQL_INTEGER);
+            $sth->bind_param(58, $fp_sampPrice0, SQL_DOUBLE);
+            $sth->bind_param(59, $fp_nmaxSamples0, SQL_INTEGER);
+            $sth->bind_param(60, $fp_accessPrice1, SQL_INTEGER);
+            $sth->bind_param(61, $fp_sampDelayInSec1, SQL_INTEGER);
+            $sth->bind_param(62, $fp_sampPrice1, SQL_INTEGER);
+            $sth->bind_param(63, $fp_nmaxSamples1, SQL_INTEGER);
+            $sth->bind_param(64, $fp_accessPrice2, SQL_INTEGER);
+            $sth->bind_param(65, $fp_sampDelayInSec2, SQL_INTEGER);
+            $sth->bind_param(66, $fp_sampPrice2, SQL_INTEGER);
+            $sth->bind_param(67, $fp_nmaxSamples2, SQL_INTEGER);
+            $sth->bind_param(68, $fp_accessPrice3, SQL_INTEGER);
+            $sth->bind_param(69, $fp_sampDelayInSec3, SQL_INTEGER);
+            $sth->bind_param(70, $fp_sampPrice3, SQL_INTEGER);
+            $sth->bind_param(71, $fp_nmaxSamples3, SQL_INTEGER);
+            $sth->bind_param(72, $fp_accessPrice4, SQL_INTEGER);
+            $sth->bind_param(73, $fp_sampDelayInSec4, SQL_INTEGER);
+            $sth->bind_param(74, $fp_sampPrice4, SQL_INTEGER);
+            $sth->bind_param(75, $fp_nmaxSamples4, SQL_INTEGER);
+            $sth->bind_param(76, $fp_accessPrice5, SQL_INTEGER);
+            $sth->bind_param(77, $fp_sampDelayInSec5, SQL_INTEGER);
+            $sth->bind_param(78, $fp_sampPrice5, SQL_INTEGER);
+            $sth->bind_param(79, $fp_nmaxSamples5, SQL_INTEGER);
+            $sth->bind_param(80, $fp_accessPrice6, SQL_INTEGER);
+            $sth->bind_param(81, $fp_sampDelayInSec6, SQL_INTEGER);
+            $sth->bind_param(82, $fp_sampPrice6, SQL_INTEGER);
+            $sth->bind_param(83, $fp_nmaxSamples6, SQL_INTEGER);
+            $sth->bind_param(84, $fp_accessPrice7, SQL_INTEGER);
+            $sth->bind_param(85, $fp_sampDelayInSec7, SQL_INTEGER);
+            $sth->bind_param(86, $fp_sampPrice7, SQL_INTEGER);
+            $sth->bind_param(87, $fp_nmaxSamples7, SQL_INTEGER);
+            $sth->bind_param(88, $fp_endCallChargeIfPossible, SQL_INTEGER);
+            $sth->bind_param(89, $fp_eccTimeGuard, SQL_INTEGER );
+            $sth->bind_param(90, $fp_userDefinedStr, SQL_CHAR);
+            $sth->bind_param(91, $fp_skipInsertBilling, SQL_INTEGER );
+            $sth->bind_param(92, $fp_periodDuration, SQL_INTEGER );
+            $sth->bind_param(93, $fp_ignoreBatchInProfit, SQL_INTEGER );
+            $sth->bind_param(94, $fp_billingTableName, SQL_CHAR);
+            $sth->execute;
+
+            $data = $sth->fetch;
+            $error_code = $data->[0];
+            $comment = $data->[1];
+
+            if($error_code eq "OK"){
+               my $sth = $dbh->prepare("exec NS_H_WSALE_IN_CHARGE_127 ?,?,?,?,?,?,?,?,?");
+               $sth->bind_param(1, $car_carriername, SQL_CHAR);
+               $sth->bind_param(2, $initialAccesType, SQL_CHAR);
+               $sth->bind_param(3, $cliKind, SQL_CHAR);
+               $sth->bind_param(4, $fp_pt_cliKindStr, SQL_CHAR);
+               $sth->bind_param(5, $fam_agent_id, SQL_CHAR);
+               $sth->bind_param(6, $fp_periodDuration, SQL_INTEGER);
+               $sth->bind_param(7, $switchNumber,SQL_INTEGER);
+               $sth->bind_param(8, $fp_callDuration, SQL_INTEGER);
+               $self->log(2,"NS_H_WSALE_IN_CHARGE_127 fp_callDuration: $fp_callDuration");
+               $sth->bind_param(9, $fp_incomingCallChargedAmount, SQL_INTEGER);
+
+               $sth->execute;
+               $data = $sth->fetch;
+
+               $error_code = $data->[0];
+               $comment = $data->[1];
+               $self->log(2,"NS_H_WSALE_IN_CHARGE_127: error_code $error_code");
+            }
+         }
+      }
+   }
+
+   if($error_code eq "OK" || $telecomResult eq 'FORCED'){               
+       my $sth = $dbb->prepare("exec NS_B_INSERT_BILLING_AND_PROFIT_136 ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?");
+       $fp_subSessionId = 2;
+       $fp_chargedDurationInSec = 0;
+       $fp_callCharge = 0;
+       $fp_previousBalance = $fp_newBalance;
+       $fp_newBalance = $fp_newBalance;
+       $wsale_zone="";
+       $tariffTimePeriod ="";
+       $fp_serviceName = "";
+       $car_carriername = "";
+       $fp_call_out_outgoingLocation_switchNumber =0;
+       $fp_call_out_outgoingLocation_channelNumber = 0;
+       $fp_call_out_dialingDurationInSec =0;
+       $fp_call_out_carrierUseCause = "#";
+       $fp_tariffItem ="$TRAILING_DURATION";
+       $fp_timeTariff_tclassName ="";
+       $tariffTimePeriod="";
+       $fp_sampDelayInSec = 0;
+
+       $sth->bind_param(1, $fp_timeOfBilling , SQL_CHAR);
+       $sth->bind_param(2, $inUseSiteName , SQL_CHAR);
+       $sth->bind_param(3, $fp_origination, SQL_CHAR);
+       $sth->bind_param(4, $fp_originationInstance, SQL_CHAR);
+       $sth->bind_param(5, $fp_sessionId, SQL_INTEGER);
+       $sth->bind_param(6, $fp_subSessionId, SQL_INTEGER);
+       $sth->bind_param(7, $tariff_idAccessType, SQL_CHAR);               
+       $sth->bind_param(8, $tcl_currencyName, SQL_CHAR);               
+       $sth->bind_param(9, $fp_telecomResult, SQL_INTEGER);
+       $sth->bind_param(10, $fp_chargedDurationInSec, SQL_INTEGER);
+       $sth->bind_param(11, $fp_callCharge ,SQL_DOUBLE);
+       $sth->bind_param(12, $fp_credit ,SQL_DOUBLE);
+       $sth->bind_param(13, $fp_distributionCost ,SQL_DOUBLE);
+       $sth->bind_param(14, $fp_costInVAT ,SQL_DOUBLE);
+       $sth->bind_param(15, $fp_costOutVAT ,SQL_DOUBLE);
+       $sth->bind_param(16, $acc_acid_productName, SQL_CHAR );
+       $sth->bind_param(17, $acc_acid_batchNumber, SQL_INTEGER );
+       $sth->bind_param(18, $acc_acid_serialNumber, SQL_INTEGER );
+
+       $sth->bind_param(20, $fp_accountPin, SQL_CHAR);
+       $sth->bind_param(21, $bpty_billMode, SQL_CHAR);
+       $sth->bind_param(22, $fp_previousBalance ,SQL_DOUBLE);
+       $sth->bind_param(23, $fp_newBalance ,SQL_DOUBLE);
+       $sth->bind_param(24, $fp_invoiceId, SQL_INTEGER);
+       $sth->bind_param(25, $fp_customerName, SQL_CHAR);
+       $sth->bind_param(26, $fp_distributionCommissionPercentage, SQL_INTEGER);
+       $sth->bind_param(27, $wsale_zone, SQL_CHAR);
+       $sth->bind_param(28, $tariffTimePeriod, SQL_CHAR);
+       $sth->bind_param(29, $cliKind, SQL_CHAR);
+       $sth->bind_param(30, $fp_billingType, SQL_CHAR );
+       $sth->bind_param(31, $fp_serviceName, SQL_CHAR);
+       $sth->bind_param(32, $fp_serviceExternalRef, SQL_CHAR);
+
+       $sth->bind_param(33, $channelNumberIn, SQL_INTEGER);
+       $sth->bind_param(34, $trunkName, SQL_CHAR);
+       $sth->bind_param(35, $did, SQL_CHAR);
+       $sth->bind_param(36, $cli);
+       $sth->bind_param(37, $fp_callDurationIn, SQL_INTEGER);
+
+       $sth->bind_param(38, $fp_call_in_dev_netName, SQL_CHAR);
+       $sth->bind_param(39, $fp_call_in_dev_subNetName, SQL_CHAR);
+       $sth->bind_param(40, $fp_call_in_dev_deviceName, SQL_CHAR);
+       $sth->bind_param(41, $fp_call_in_dev_deviceAddressKind, SQL_CHAR) ;
+       $sth->bind_param(42, $fp_call_in_dev_deviceAddress, SQL_CHAR);
+
+       $sth->bind_param(43, $inUseSiteName, SQL_CHAR);
+       $sth->bind_param(44, $fp_call_out_outgoingLocation_switchNumber, SQL_INTEGER);
+       $sth->bind_param(45, $fp_call_out_outgoingLocation_channelNumber, SQL_INTEGER);
+       $sth->bind_param(46, $dni_canonical, SQL_CHAR);
+       $sth->bind_param(47, $fp_call_out_dialingDurationInSec, SQL_INTEGER);
+       $sth->bind_param(48, $car_carriername, SQL_CHAR);
+
+       $sth->bind_param(49, $fp_call_out_carrierUseCause, SQL_CHAR);
+       $sth->bind_param(50, $fp_call_out_routePriority, SQL_INTEGER);
+       $sth->bind_param(51, $fp_noCall_login, SQL_CHAR);
+       $sth->bind_param(52, $fp_noCall_comment, SQL_CHAR);
+
+       $sth->bind_param(53, $fp_tariffItem, SQL_CHAR );
+       $sth->bind_param(54, $fp_timeTariff_tclassName, SQL_CHAR );
+       $sth->bind_param(55, $tariffTimePeriod, SQL_CHAR );
+
+       $sth->bind_param(56, $fp_accessPrice0, SQL_INTEGER);
+       $sth->bind_param(57, $fp_sampDelayInSec, SQL_INTEGER);
+       $sth->bind_param(58, $fp_sampPrice0, SQL_DOUBLE);
+       $sth->bind_param(59, $fp_nmaxSamples0, SQL_INTEGER);
+       $sth->bind_param(60, $fp_accessPrice1, SQL_INTEGER);
+       $sth->bind_param(61, $fp_sampDelayInSec1, SQL_INTEGER);
+       $sth->bind_param(62, $fp_sampPrice1, SQL_INTEGER);
+       $sth->bind_param(63, $fp_nmaxSamples1, SQL_INTEGER);
+       $sth->bind_param(64, $fp_accessPrice2, SQL_INTEGER);
+       $sth->bind_param(65, $fp_sampDelayInSec2, SQL_INTEGER);
+       $sth->bind_param(66, $fp_sampPrice2, SQL_INTEGER);
+       $sth->bind_param(67, $fp_nmaxSamples2, SQL_INTEGER);
+       $sth->bind_param(68, $fp_accessPrice3, SQL_INTEGER);
+       $sth->bind_param(69, $fp_sampDelayInSec3, SQL_INTEGER);
+       $sth->bind_param(70, $fp_sampPrice3, SQL_INTEGER);
+       $sth->bind_param(71, $fp_nmaxSamples3, SQL_INTEGER);
+       $sth->bind_param(72, $fp_accessPrice4, SQL_INTEGER);
+       $sth->bind_param(73, $fp_sampDelayInSec4, SQL_INTEGER);
+       $sth->bind_param(74, $fp_sampPrice4, SQL_INTEGER);
+       $sth->bind_param(75, $fp_nmaxSamples4, SQL_INTEGER);
+       $sth->bind_param(76, $fp_accessPrice5, SQL_INTEGER);               
+       $sth->bind_param(77, $fp_sampDelayInSec5, SQL_INTEGER);
+       $sth->bind_param(78, $fp_sampPrice5, SQL_INTEGER);
+       $sth->bind_param(79, $fp_nmaxSamples5, SQL_INTEGER);
+       $sth->bind_param(80, $fp_accessPrice6, SQL_INTEGER);
+       $sth->bind_param(81, $fp_sampDelayInSec6, SQL_INTEGER);
+       $sth->bind_param(82, $fp_sampPrice6, SQL_INTEGER);
+       $sth->bind_param(83, $fp_nmaxSamples6, SQL_INTEGER);
+       $sth->bind_param(84, $fp_accessPrice7, SQL_INTEGER);
+       $sth->bind_param(85, $fp_sampDelayInSec7, SQL_INTEGER);
+       $sth->bind_param(86, $fp_sampPrice7, SQL_INTEGER);
+       $sth->bind_param(87, $fp_nmaxSamples7, SQL_INTEGER);
+       $sth->bind_param(88, $fp_endCallChargeIfPossible, SQL_INTEGER);
+       $sth->bind_param(89, $fp_eccTimeGuard, SQL_INTEGER );
+       $sth->bind_param(90, $fp_userDefinedStr, SQL_CHAR);
+       $sth->bind_param(91, $fp_skipInsertBilling, SQL_INTEGER );
+       $sth->bind_param(92, $fp_periodDuration, SQL_INTEGER );
+    
+       $sth->bind_param(94, $fp_billingTableName, SQL_CHAR);
+       $sth->execute;
+
+       $data = $sth->fetch;
+       $error_code = $data->[0];
+       $comment = $data->[1];
+
+       if($error_code ="OK"){
+          my $sth = '';
+          $self->log(2,"accountIdMode: $accountIdMode");
+          if($accountIdMode eq "P") {
+              $sth = $dbh->prepare("exec NS_H_CLEAR_INUSE_CHA_106 ?,?");
+              $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+              $sth->bind_param(2, $channelNumberIn, SQL_INTEGER);
+              $self->log(2,"NS_H_CLEAR_INUSE_CHA_106: switchNumber $switchNumber");
+              $self->log(2,"NS_H_CLEAR_INUSE_CHA_106: channelNumberIn $channelNumberIn");
+              $sth->execute;
+              $data = $sth->fetch;
+          }
+          else {
+              $sth = $dba->prepare("exec NS_N_CLEAR_INUSE_ACC_105 ?,?,?,?,?,?,?");
+              $sth->bind_param(1, $acc_acid_productName, SQL_CHAR);
+              $sth->bind_param(2, $acc_acid_batchNumber, SQL_INTEGER);
+              $sth->bind_param(3, $acc_acid_serialNumber, SQL_INTEGER);
+              $sth->bind_param(4, $switchNumber, SQL_INTEGER);
+              $sth->bind_param(5, $channelNumberIn, SQL_INTEGER);
+              $sth->bind_param(6, $fp_countOfSuccessfulCalls, SQL_INTEGER);
+              $sth->bind_param(7, $dni_canonical, SQL_CHAR);
+              $sth->execute;
+              $data = $sth->fetch;
+          }
+          $error_code = $data->[0];
+          $comment = $data->[1];
+       }
+   }
+   return($error_code);
+}

@@ -1,0 +1,30 @@
+use DBI;
+use DBI qw(:sql_types);
+
+$db_mssql = null;
+
+sub proceso_bun {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $db_mssql = $self->{server}{dbh};
+
+   my $agent = $params->{'agent'};
+
+   $db_mssql->do("use $agent"); 
+
+   # Parametros de Inicializacion
+   my $cli = $params->{'cli'};
+   my $key = $params->{'key'};
+
+   ## Verificacion de Planes Flexibles / Control
+   $self->log(2, "Proceso_bun: cli $cli -- key $key");
+
+   my $sth = $db_mssql->prepare("update multi_cli set cliUserPin = ? where cli = ?");
+   $sth->execute($key,$cli);
+
+   $errorCode = 'OK';
+   $agi->set_variable('errorCode',$errorCode);
+   return($errorCode);;
+}

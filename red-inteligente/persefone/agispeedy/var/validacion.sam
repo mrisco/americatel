@@ -1,0 +1,518 @@
+use DBI;
+
+$dbh = null;	# descriptor base de datos HOST
+$dba = null;	# descriptor base de datos AGENT
+#$dbmyporta = null;
+$dbp = null;	# descriptor base de datos PORTABILIDAD
+
+sub validacion {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $dbh = $self->{server}{dbh};
+   $dba = $self->{server}{dba};
+   $dbp = $self->{server}{dbp};
+   #$dbmyporta = $self->{server}{dbmyporta};
+
+   my $agent = $params->{'agent'};
+
+   $dbh->do("use HOST"); 
+   $dba->do("use $agent");
+   $dbp->do("use portabilidad");
+
+   # Parametros de Inicializacion
+   $agi_name = "validacion";
+   $inUseSiteName = "AMP";
+   $tariffKind = "C";
+   $deviceAddressKind = "P";
+   $area_code = "";
+   $numberingPlan = 0;		# Por validar
+   $numberType = 0;			# Por validar
+   $channelIn = $params->{'channelIn'};
+   $switchNumber = $params->{'switchNumber'};
+   $channelNumberIn = $params->{'channelNumberIn'};
+   if ($channelIn =~ m/DAHDI\/(\d+)\-/) {
+      $channelNumberIn = $1;
+   }
+   $agi->set_variable('channelNumberIn',$channelNumberIn);
+   $did = $params->{'did'};
+   $cli = $params->{'cli'};
+   $custom = $params->{'custom'};
+   $trunkName = $params->{'trunkName'};
+
+   $self->log(2, "AGI: $agi_name: =================================================================================================");
+   $self->log(2, "AGI: $agi_name: variables en sesion - agent: $agent - did: $did - cli: $cli - switchNumber: $switchNumber");
+   $self->log(2, "AGI: $agi_name: variables en sesion - channelIn: $channelIn - channelNumberIn: $channelNumberIn - custom: $custom - zone_modifiedAccessType: $zone_modifiedAccessType");
+   $self->log(2, "AGI: $agi_name: variables fijas - inUseSiteName: $inUseSiteName - numberingPlan: $numberingPlan - numberType: $numberType - tariffKind: $tariffKind - deviceAddressKind: $deviceAddressKind");
+
+   # Lanzando el Store Procedure 1 ---------------------- 
+   $self->log(2, "AGI: $agi_name: SP 1 - exec NS_H_GET_INCALL_INF_CACHED_100 $switchNumber, $channelNumberIn, \"$did\", \"$cli\", $numberingPlan, $numberType, \"$trunkName\", $callingPartyCategory");
+   
+   my $sth = $dbh->prepare("exec NS_H_GET_INCALL_INF_CACHED_100 ?, ?, ?, ?, ?, ?, ?, ?");
+   $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+   $sth->bind_param(2, $channelNumberIn, SQL_INTEGER);
+   $sth->bind_param(3, $did, SQL_CHAR);
+   $sth->bind_param(4, $cli, SQL_CHAR);
+   $sth->bind_param(5, $numberingPlan, SQL_INTEGER);
+   $sth->bind_param(6, $numberType, SQL_INTEGER);
+   $sth->bind_param(7, $trunkName, SQL_CHAR);
+   $sth->bind_param(8, $callingPartyCategory, SQL_INTEGER);
+   $sth->execute;
+
+   # Salida del Store Procedure
+   $data = $sth->fetch;
+  
+   #$translationName = $data->[3];
+   #$numberingPlanBeforeRules = $data->[4];
+   #$numberTypeBeforeRules = $data->[5];
+   #$prefix = $data->[6];
+   #$nbToRemove = $data->[7];
+   #$prefixToAdd = $data->[8];
+   #$numberingPlanAfterRules = $data->[9];
+   #$numberTypeAfterRules = $data->[10];
+   
+   $cliAfterRules = $data->[2];
+   $didStatus = $data->[14];
+   $didContent = $data->[15];
+   $calledPhoneNb = $data->[16];			# calledPhoneNb: Es el prefijo DID en HOST
+   $initialAccesType = $data->[19];
+   $destNbTranslation = $data->[25];
+   $accountIdMode = $data->[29];
+   $familyName = $data->[30];
+   $cliKind = $data->[45];
+   
+   $errorCode = $data->[0];
+   #$comment = $data->[1];
+   
+   $agi->set_variable('CDR(didContent)', $didContent);
+   $agi->set_variable('CDR(calledPhoneNb)', $calledPhoneNb);
+   $agi->set_variable('initialAccesType', $initialAccesType);
+   $agi->set_variable('destNbTranslation', $destNbTranslation);   
+   $agi->set_variable('CDR(accountIdMode)', $accountIdMode);
+   $agi->set_variable('CDR(familyName)', $familyName);
+   $agi->set_variable('cliKind', $cliKind);
+   
+   $self->log(2, "AGI: $agi_name: SP 1 - cliAfterRules: $cliAfterRules - didContent: $didContent - calledPhoneNb: $calledPhoneNb - initialAccessType: $initialAccesType");
+   $self->log(2, "AGI: $agi_name: SP 1 - destNbTranslation: $destNbTranslation - didStatus: $didStatus - accountIdMode: $accountIdMode - familyName: $familyName - cliKind: $cliKind - errorCode $errorCode");
+
+   #$selfProvisionningService = $data->[17];
+   #$serviceName = $data->[18];
+   #$singleAccProductName = $data->[31];
+   #$singleAccBatchNumber = $data->[32];
+   #$singleAccountSerialNumber = $data->[33];
+   #$ChargeMode = $data->[40];
+   #$accountIdFamilyName = $data->[30];
+   #$actionOnErrorWhenOnHook = $data->[23];
+   #$serviceName = $data->[18];
+   #$status = $data->[14];
+   #$svr_name = $data->[38];
+
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: cli $cli");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: cliKind $cliKind");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100:numberingPlanAfterRules  $numberingPlanAfterRules");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100:numberTypeAfterRules  $numberTypeAfterRules");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100:numberingPlanBeforeRules  $numberingPlanBeforeRules");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100:numberTypeBeforeRules  $numberTypeBeforeRules");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: prefix $prefix");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: nbToRemove $nbToRemove ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: prefixToAdd $prefixToAdd ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: didContent $didContent ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: calledPhoneNb $calledPhoneNb ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: selfProvisionningService $selfProvisionningService ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: serviceName $serviceName ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: destNbTranslation $destNbTranslation ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: accountIdMode $accountIdMode ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: familyName $familyName ");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: pphone_prefixToAddToDestNb $data->[46]");
+   #$self->log(2, "NS_H_GET_INCALL_INF_CACHED_100: pphonegroup_stepForPrefixToAddToDestNb $data->[47]");
+
+   if ($errorCode eq "OK"){
+      #$self->log(2, "Paso la etapa 1");
+
+      $fp_pt_cliKind = "";
+      $isMultiCliRequired = 1;
+
+      $self->log(2, "AGI: $agi_name: SP 2 - exec NS_N_GET_MULTI_CLI_ZONE_CLI_109 \"$fp_pt_cliKind\", \"$cli\", \"$cliAfterRules\", \"$initialAccesType\", \"$familyName\", $isMultiCliRequired");
+      
+      my $sth = $dba->prepare("exec NS_N_GET_MULTI_CLI_ZONE_CLI_109 ?,?,?,?,?,?");
+      $sth->bind_param(1, $fp_pt_cliKind, SQL_CHAR);
+      $sth->bind_param(2, $cli, SQL_CHAR);
+      $sth->bind_param(3, $cliAfterRules, SQL_CHAR);
+      $sth->bind_param(4, $initialAccesType, SQL_CHAR);
+      $sth->bind_param(5, $familyName, SQL_CHAR);
+      $sth->bind_param(6, $isMultiCliRequired, SQL_INTEGER);
+      $sth->execute; 
+    
+      #$self->log(2, "fp_pt_cliKind $fp_pt_cliKind");
+      #$self->log(2, "cli $cli");
+      #$self->log(2, "cliAfterRules $cliAfterRules");
+      #$self->log(2, "initialAccesType $initialAccesType");
+      #$self->log(2, "familyName $familyName");
+      
+      $data = $sth->fetch;
+
+	  $is_multicli = $data->[2];
+      $muc_productName = $data->[4];
+      $muc_batchNumber = $data->[5];
+      $muc_serialNumber = $data->[6];
+      $muc_comment = $data->[8];
+      $zone_modifiedAccessType = $data->[12];
+      $zone_zoneCli = $data->[13];
+      $errorCode = $data->[0];
+      #$comment = $data->[1];
+      
+      if ($muc_comment != null) {
+         $agi->set_variable('muc_comment', $muc_comment);		# Limitacion de llamadas concurrentes desde un mismo ANI (primarios) a destino de fraude en proceso_XXX.sam
+      }
+      $self->log(2, "AGI: $agi_name: SP 2 - is_multicli: $is_multicli - muc_productName: $muc_productName - muc_batchNumber: $muc_batchNumber - muc_serialNumber: $muc_serialNumber");
+	  $self->log(2, "AGI: $agi_name: SP 2 - muc_comment: $muc_comment - zone_modifiedAccessType: $zone_modifiedAccessType - zone_zoneCli: $zone_zoneCli - errorCode $errorCode");
+	        
+      #$nbOfMultiCli = $data->[2];
+      #$muc_cli = $data->[3];
+      #$muc_cliUserPin = $data->[7];
+      #$zone_accessType = $data->[9];
+      #$zone_isItPNB = $data->[10];
+      #$zone_prefix = $data->[11];
+      #$zone_cliStatus = $data->[14];
+      #$zone_timeOfLastPinFailure = $data->[15];
+      #$zone_timeOfRecentPinFailure = $data->[16];
+
+	  #$self->log(2, "nbOfMultiCli $nbOfMultiCli");
+      #$self->log(2, "muc_cli $muc_cli");
+      #$self->log(2, "productName $muc_productName");
+      #$self->log(2, "batchNumber $muc_batchNumber");
+      #$self->log(2, "serialNumber $muc_serialNumber");
+      #$self->log(2, "serialNumber $muc_comment");
+      #$self->log(2, "zone_accessType $zone_accessType");
+      #$self->log(2, "zone_modifiedAccessType $zone_modifiedAccessType");
+      #$self->log(2, "zone_zoneCli $zone_zoneCli");
+      
+      #$self->log(2, "NS_N_GET_MULTI_CLI_ZONE_CLI_109: errorCode $errorCode");
+      #$self->log(2, "NS_N_GET_MULTI_CLI_ZONE_CLI_109: comment $comment");
+
+      ## ANALISIS DE LISTA NEGRA Y CONTROL DE ACCESOS: FAMILY "ACL"
+      ## BLOCKED equivale a un access_type AT0
+      if ($familyName eq "ACL") {
+         $custom = "${custom}=1";
+         #$self->log(2, "custom $custom");
+         if ($errorCode eq "OK") {
+             if ($zone_zoneCli) {
+                 if ((index($zone_zoneCli,$custom) != -1) && ($didStatus ne "I")) {
+                     $errorCode = 'ZONE_CLI_NOT_FOUND';
+                 }
+             }
+         } elsif ($didStatus eq "I") {
+         	 $errorCode = 'OK';
+         }
+         $agi->set_variable('errorCode', $errorCode);
+         $self->log(2, "AGI: $agi_name: finalizacion - familyName: $familyName - didStatus: $didStatus - custom: $custom - errorCode: $errorCode");
+         return($errorCode);
+      }
+
+      #ANALISIS DE COBERTURAS: FAMILY "ZONE"
+      if ($familyName eq "ZONE") {
+	     $errorCode = "OK";
+	 	 # Verificar si el cli esta bloqueado completamente
+	 	 $sth = $dba->prepare("select count(*) from zone_cli where prefix = ? and cliStatus <> 'A' and ? like (initialAccessTypeName + '%')"); 
+	 	 $sth->bind_param(1, $cli, SQL_CHAR);
+	 	 $sth->bind_param(2, $calledPhoneNb, SQL_CHAR);
+	 	 $sth->execute;
+         $data = $sth->fetch;
+         $total_blocked = $data->[0];
+	 	 if ($total_blocked ne "0") { 
+	        ## Esta bloqueado totalmente
+	        $errorCode = "ZONE_NOT_VALID";
+		 } else {
+	     	$sth = $dba->prepare("select count(*) from zone_cli where prefix = ? and zoneCli like '%$destNbTranslation%' and ? like (initialAccessTypeName + '%')");
+	     	$sth->bind_param(1, $cli, SQL_CHAR);
+	     	$sth->bind_param(2, $calledPhoneNb, SQL_CHAR);
+	     	$sth->execute;
+	     	$data = $sth->fetch;
+	     	$blocked = $data->[0];
+	     	if ($blocked ne "0") {
+	           ## Esta bloqueado para la cobertura destino
+	           $errorCode = "ZONE_NOT_VALID";
+	        }
+	     }
+	     #$self->log(2, "Analisis de Coberturas: errorCode $errorCode - total_blocked $total_blocked - blocked $blocked");
+	     $agi->set_variable('errorCode', $errorCode);
+	     $self->log(2, "AGI: $agi_name: finalizacion - familyName: $familyName - total_blocked $total_blocked - blocked $blocked - errorCode: $errorCode");
+	     return($errorCode);
+      }
+
+      if ($errorCode eq "ZONE_CLI_NOT_FOUND") {
+         $zone_modifiedAccessType = 'Regular'; 
+      }
+
+      # Obtener datos de la cuenta
+      if ($errorCode eq "OK" || $errorCode eq "ZONE_CLI_NOT_FOUND"){
+         #$sth = "";
+         $fp_usePPSessionTable = 0;
+
+         if ($accountIdMode eq "P") {
+            $accountPin = $params->{'accountPin'};
+            
+            $self->log(2, "AGI: $agi_name: SP 3 - exec NS_N_GET_ACC_BY_FAMILY_PIN_CACHED_105 $switchNumber, $channelNumberIn, \"$familyName\", \"$accountPin\", \"$inUseSiteName\", $fp_usePPSessionTable");
+      
+            my $sth = $dba->prepare("exec NS_N_GET_ACC_BY_FAMILY_PIN_CACHED_105 ?,?,?,?,?,?");
+            $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+            $sth->bind_param(2, $channelNumberIn, SQL_INTEGER);
+            $sth->bind_param(3, $familyName, SQL_CHAR);
+            $sth->bind_param(4, $accountPin, SQL_CHAR);
+            $sth->bind_param(5, $inUseSiteName, SQL_CHAR);
+            $sth->bind_param(6, $fp_usePPSessionTable, SQL_INTEGER);
+            
+            #$self->log(2, "switchNumber $switchNumber");
+            #$self->log(2, "channelNumberIn $channelNumberIn");
+            #$self->log(2, "familyName $familyName");
+            #$self->log(2, "accountPin $accountPin");
+            #$self->log(2, "inUseSiteName $inUseSiteName");
+            $sth->execute;
+            $data = $sth->fetch;
+            $errorCode = $data->[0];
+            #$self->log(2, "NS_N_GET_ACC_BY_FAMILY_PIN_CACHED_105: errorCode $errorCode");
+            $self->log(2, "AGI: $agi_name: SP 3 - errorCode: $errorCode");
+         }
+         else {
+            #CON ESTE QUERY SE VERIFICA SI UN ANI TIENE ASIGNADO UN PLAN
+            $self->log(2, "AGI: $agi_name: SP 3 - exec NS_N_GET_ACC_BY_SERIAL_157 $switchNumber, $channelNumberIn, \"$muc_productName\", $muc_batchNumber, $muc_serialNumber, \"$inUseSiteName\", \"$tariffKind\", \"$zone_modifiedAccessType\", $fp_usePPSessionTable");
+      
+            my $sth = $dba->prepare("exec NS_N_GET_ACC_BY_SERIAL_157 ?,?,?,?,?,?,?,?,?");
+            $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+            $sth->bind_param(2, $channelNumberIn, SQL_INTEGER);
+            $sth->bind_param(3, $muc_productName, SQL_CHAR);
+            $sth->bind_param(4, $muc_batchNumber, SQL_INTEGER);
+            $sth->bind_param(5, $muc_serialNumber, SQL_INTEGER);
+            $sth->bind_param(6, $inUseSiteName, SQL_CHAR);
+            $sth->bind_param(7, $tariffKind, SQL_CHAR);
+            $sth->bind_param(8, $zone_modifiedAccessType, SQL_CHAR);
+            $sth->bind_param(9, $fp_usePPSessionTable, SQL_INTEGER);
+            
+            #$self->log(2, "switchNumber $switchNumber");
+            #$self->log(2, "channelNumberIn $channelNumberIn");
+            #$self->log(2, "productName $muc_productName");
+            #$self->log(2, "batchNumber $muc_batchNumber");
+            #$self->log(2, "serialNumber $muc_serialNumber");
+            #$self->log(2, "inUseSiteName $inUseSiteName");
+            #$self->log(2, "tariffKind $tariffKind");
+            #$self->log(2, "zone_modifiedAccessType $zone_modifiedAccessType");
+            #$self->log(2, "fp_usePPSessionTable $fp_usePPSessionTable");
+            $sth->execute;
+            $data = $sth->fetch;
+            $errorCode = $data->[0];
+            #$self->log(2, "NS_N_GET_ACC_BY_SERIAL_157: errorCode $errorCode");
+            $self->log(2, "AGI: $agi_name: SP 3 - errorCode: $errorCode");
+         }
+            
+         if ($errorCode eq "OK" || $errorCode eq "ACCOUNT_IN_USE") {
+            $errorCode = $data->[0];
+            #$comment = $data->[1];
+            $acc_acid_productName = $data->[2];
+            $acc_acid_batchNumber =$data->[3];
+            $acc_acid_serialNumber = $data->[4];
+            #$acc_pin = $data->[6];
+            #$acc_destNbKind = $data->[7];
+            
+            $agi->set_variable('acc_acidproductName', $acc_acid_productName);
+            $agi->set_variable('acc_acid_batchNumber', $acc_acid_batchNumber);
+            $agi->set_variable('acc_acid_serialNumber', $acc_acid_serialNumber);
+            
+            $acc_finf_prep_RemainCredit = $data->[19];
+            $acc_finf_all_monthlyLimit = $data->[21];
+            $acc_finf_all_curMonthlyConsumption = $data->[22];
+            $acc_finf_all_curMonth = $data->[23];
+            
+            #$acc_familyName = $data->[5];
+            #$acc_user_pin = $data->[8];
+            #$acc_state = $data->[9];
+            #$acc_iloc_switchNumber = $data->[10];
+            #$acc_iloc_channelNumber = $data->[11];
+            #$acc_firstUsageDate = $data->[12];
+            #$acc_endDate = $data->[13];
+            #$acc_redialNumber = $data->[14];
+            #$acc_countOfSuccessfulCalls = $data->[15];
+            #$acc_countOfBadAttempt = $data->[16];
+            #$acc_lastUsageDate = $data->[17];
+            #$acc_lastAdminFeeDate = $data->[18];
+            #$acc_finf_prep_TotalPurchased = $data->[20];
+
+            my (undef, undef, undef, $day, $month, $year) = localtime();
+            $year +=1900;
+            $month +=1;
+            $curMonth = $acc_finf_all_curMonth;
+            
+            if ($accountIdMode eq "P") {
+               #$self->log(2, "acc_finf_prep_TotalPurchased $acc_finf_prep_TotalPurchased");
+               #$self->log(2, "acc_finf_prep_RemainCredit $acc_finf_prep_RemainCredit");
+               $saldo_disponible = $acc_finf_prep_RemainCredit;
+            }
+            else {
+               if ($curMonth != $month) {
+                  $saldo_disponible = $acc_finf_all_monthlyLimit;
+                  $curMonth = $month;
+                  $dba->do("UPDATE dbo.account SET finf_all_curMonthlyConsumption=0.00000000,finf_all_curMonth=$month WHERE acid_productName='$acc_acid_productName' and acid_batchNumber=$acc_acid_batchNumber and acid_serialNumber=$acc_acid_serialNumber");
+                  $self->log(2, "AGI: $agi_name: UPDATE dbo.account SET finf_all_curMonthlyConsumption=0.00000000,finf_all_curMonth=$month");
+                  $self->log(2, "AGI: $agi_name: WHERE acid_productName='$acc_acid_productName' and acid_batchNumber=$acc_acid_batchNumber and acid_serialNumber=$acc_acid_serialNumber");
+               }
+               else {
+                  $saldo_disponible = $acc_finf_all_monthlyLimit - $acc_finf_all_curMonthlyConsumption;
+               }
+            }
+            #$self->log(2, "saldo_disponible $saldo_disponible");
+            $self->log(2, "AGI: $agi_name: saldo_disponible - accountIdMode: $accountIdMode - saldo_disponible: $saldo_disponible");
+
+            $agi->set_variable('CDR(monthlyLimit)', $acc_finf_all_monthlyLimit);
+            $agi->set_variable('CDR(curMonthlyConsumption)', $acc_finf_all_curMonthlyConsumption);
+            $agi->set_variable('CDR(curMonth)', $curMonth);
+            $agi->set_variable('CDR(saldo_disponible)', $saldo_disponible);
+
+            #$acc_finf_all_totalConsumption = $data->[24];
+            #$acc_inUseSiteName = $data->[34];
+            
+            #$self->log(2, "acc_acid_productName $acc_acid_productName");
+            #$self->log(2, "acc_acid_batchNumber $acc_acid_batchNumber");
+            #$self->log(2, "acc_acid_serialNumber $acc_acid_serialNumber");
+            #$self->log(2, "acc_pin $acc_pin");
+            #$self->log(2, "acc_destNbKind $acc_destNbKind");
+
+            if ($accountIdMode eq "P") {
+               #$fam_familyName = $data->[37]; 
+               #$self->log(2, "NS_N_GET_ACC_BY_FAMILY_PIN_CACHED_105: fam_familyName $fam_familyName");
+               $bpty_billMode = $data->[55];
+               $agi->set_variable('bpty_billMode', $bpty_billMode);
+               $agi->set_variable('zone_modifiedAccessType', $zone_modifiedAccessType);
+
+               ###TARIFF CLASS NAME: Pendiente de ver de donde se obtiene
+               $fam_agent_id = 7;
+               $tcl_tclassName = 'TC';
+               $rtcl_routeClass = 'RC';
+               $tcl_currencyName = 'SOL';
+               $agi->set_variable('tcl_tclassName',$tcl_tclassName);
+               $agi->set_variable('rtcl_routeClass',$rtcl_routeClass);
+               $agi->set_variable('fam_agent_id',$fam_agent_id);
+               $agi->set_variable('tcl_currencyName',$tcl_currencyName);
+
+			   $self->log(2, "AGI: $agi_name: set_variable accountIdMode: $accountIdMode - bpty_billMode: $bpty_billMode - zone_modifiedAccessType: $zone_modifiedAccessType - tcl_tclassName: $tcl_tclassName - rtcl_routeClass: $rtcl_routeClass - fam_agent_id: $fam_agent_id - tcl_currencyName: $tcl_currencyName");
+               #$self->log(2, "tcl_tclassName $tcl_tclassName");
+               #$self->log(2, "fam_agent_id $fam_agent_id");
+               #$self->log(2, "NS_N_GET_ACC_BY_FAMILY_PIN_CACHED_105: bpty_billMode $bpty_billMode");
+               ###TARIFF CLASS NAME: Seteado manualmente
+
+               #$self->log(2, "NS_N_GET_ACC_BY_FAMILY_PIN_CACHED_105: errorCode : $errorCode, comment: $comment");
+ 
+ 			   $self->log(2, "AGI: $agi_name: SP 4 - exec NS_H_SET_INUSE_CHA_109 $switchNumber, $channelNumberIn, \"$familyName\", \"$acc_acid_productName\", \"$acc_acid_batchNumber\", \"$acc_acid_serialNumber\", $deviceAddressKind");
+ 			   
+               my $sth = $dbh->prepare("exec NS_H_SET_INUSE_CHA_109 ?,?,?,?,?,?,?,?,?,?,?");
+               $sth->bind_param(1, $switchNumber, SQL_INTEGER);
+               $sth->bind_param(2, $channelNumberIn, SQL_INTEGER);
+               $sth->bind_param(3, $familyName, SQL_CHAR);
+               $sth->bind_param(4, $acc_acid_productName, SQL_CHAR);
+               $sth->bind_param(5, $acc_acid_batchNumber, SQL_CHAR);
+               $sth->bind_param(6, $acc_acid_serialNumber, SQL_CHAR);
+               $sth->bind_param(10, $deviceAddressKind, SQL_CHAR);
+               $sth->execute;
+               $data = $sth->fetch;
+
+               $errorCode = $data->[0];
+               #$comment = $data->[1];
+               #$self->log(2, "NS_H_SET_INUSE_CHA_109: errorCode : $errorCode, comment: $comment");
+               $self->log(2, "AGI: $agi_name: SP 4 - errorCode: $errorCode");
+            } else {
+               #$fam_familyName = $data->[35]; 
+               #$self->log(2, "NS_N_GET_ACC_BY_SERIAL_157: fam_familyName $fam_familyName");
+
+               $fam_agent_id = $data->[36];
+               $bpty_billMode = $data->[85];
+               $rtcl_routeClass = $data->[145];
+               $tcl_tclassName = $data->[147];
+               $timePeriodClassName = $data->[148];
+               $tcl_currencyName = $data->[149];
+               
+               $agi->set_variable('fam_agent_id', $fam_agent_id);
+               $agi->set_variable('bpty_billMode', $bpty_billMode);
+               $agi->set_variable('tcl_currencyName', $tcl_currencyName);
+               $agi->set_variable('rtcl_routeClass', $rtcl_routeClass);
+               $agi->set_variable('tcl_tclassName', $tcl_tclassName);
+               $agi->set_variable('timePeriodClassName', $timePeriodClassName);
+               $agi->set_variable('zone_modifiedAccessType', $zone_modifiedAccessType);
+
+			   $self->log(2, "AGI: $agi_name: set_variable accountIdMode: $accountIdMode - bpty_billMode: $bpty_billMode - zone_modifiedAccessType: $zone_modifiedAccessType");
+               $self->log(2, "AGI: $agi_name: set_variable accountIdMode: $accountIdMode - tcl_tclassName: $tcl_tclassName - rtcl_routeClass: $rtcl_routeClass - fam_agent_id: $fam_agent_id");
+               $self->log(2, "AGI: $agi_name: set_variable accountIdMode: $accountIdMode - tcl_currencyName: $tcl_currencyName - timePeriodClassName: $timePeriodClassName");
+               
+               #$tcl_admFee_frequency = $data->[150];
+            
+               #$self->log(2, "NS_N_GET_ACC_BY_SERIAL_157: fam_agent_id $fam_agent_id");
+               #$self->log(2, "NS_N_GET_ACC_BY_SERIAL_157: bpty_billMode $bpty_billMode");
+               #$self->log(2, "tcl_tclassName $tcl_tclassName");
+               #$self->log(2, "timePeriodClassName $timePeriodClassName");
+               #$self->log(2, "tcl_currencyName $tcl_currencyName");
+               #$self->log(2, "tcl_admFee_frequency $tcl_admFee_frequency");
+               #$self->log(2, "NS_N_GET_ACC_BY_SERIAL_157: errorCode : $errorCode, comment: $comment");
+            }
+            $agi->set_variable('is_multicli', $is_multicli);
+            $agi->set_variable('acid_productName', $acc_acid_productName);
+            $agi->set_variable('acid_batchNumber', $acc_acid_batchNumber);
+            $agi->set_variable('acid_serialNumber', $acc_acid_serialNumber);
+            $self->log(2, "AGI: $agi_name: set_variable accountIdMode both - is_multicli: $is_multicli - acc_acid_productName: $acc_acid_productName - acid_batchNumber: $acc_acid_batchNumber");
+            $self->log(2, "AGI: $agi_name: set_variable accountIdMode both - acid_serialNumber: $acc_acid_serialNumber");
+         } elsif ($errorCode eq "PARAM_MISSING") {
+            ### EL ANI NO TIENE ASIGNADO UN PLAN CONTROL 1577
+            $dni_interop = $did;
+            $nrn_orig = '37';
+            if ($destNbTranslation eq '1577_LOCAL') {                
+                $area_code = '';
+                $extension = substr($did, 4);
+                if (($extension =~ m/^[1-8]/i) && ((length($extension) == 6) || (length($extension) == 7))) {
+      			   if ($ani =~ m/^1/i) {
+         			  $area_code = '1';
+      			   } else {
+         			  $area_code = substr($ani, 0, 2);
+      			   }
+      			   $phone = $area_code.$extension;
+         		   my $sth = $dbp->prepare("SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?");
+         		   $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         		   $data = $sth->fetch;
+         		   $nrn_dest = $data->[0];
+         		   if ($nrn_dest == null) {
+            		  $prefijo = substr($phone, 0, 6);
+            		  my $sth = $dbh->prepare("SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?");
+            		  $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            		  $data = $sth->fetch;
+            		  $nrn_dest = $data->[0];
+            		  if ($nrn_dest == null) {
+	           			 $errorCode = 'UNMATCHED';
+            		  }
+         		   }
+         		   $dni_interop = substr($did, 0, 4).$nrn_dest.$nrn_orig.$phone;
+                }
+            } elsif ($destNbTranslation eq '1577_MOVIL') {
+                $dni_salida = substr($did, 4);
+                #$self->log(2, "SIN PLAN CONTROL 1577: dni_salida: $dni_salida");
+                #my $sth = $dbmyporta->prepare("SELECT nrn_receptor FROM numeros_portados WHERE telefono = ?");
+                my $sth = $dbp->prepare("SELECT nrn_receptor FROM numeros_portados WHERE telefono = ?");
+                $sth->execute($dni_salida);
+                $data = $sth->fetch;
+                $nrn_dest = $data->[0];
+                if ($nrn_dest == null) {
+                    $prefijo = substr($dni_salida, 0, 5);
+                    my $sth = $dbp->prepare("SELECT nrn FROM plan_numeracion WHERE prefijo = ?");
+                    $sth->execute($prefijo);
+                    $data = $sth->fetch;
+                    $nrn_dest = $data->[0];
+                    if ($nrn_dest == null) {
+	           		   $errorCode = 'UNMATCHED';
+            		}
+                }
+                $dni_interop = substr($did, 0, 4).$nrn_dest.$nrn_orig.$dni_salida;
+            }
+            ## Faltaria la portabilidad LDN (VERIFICAR)
+            $self->log(2, "AGI: $agi_name: ANI no tiene asignado un plan control 1577 - dni_interop: $dni_interop - errorCode: $errorCode");
+            $agi->set_variable('CDR(dni-interop)',$dni_interop);
+         } 
+      }
+   }
+   $agi->set_variable('errorCode',$errorCode);
+   return($errorCode);
+}
