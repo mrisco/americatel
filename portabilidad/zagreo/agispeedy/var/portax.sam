@@ -1,0 +1,433 @@
+
+use DBI;
+use DateTime::Format::Strptime;
+
+$dbh = null;
+$dbn = null;
+
+sub portax {
+   my $self = shift;
+   my $server_prop = $self->{server};
+   my $agi = $server_prop->{agi};
+   my $params = $agi->{params};
+   $dbh = $self->{server}{dbh};
+   $dbn = $self->{server}{dbn};
+
+   # Parametros de Inicializacion
+   my $extension = $params->{'did'};
+   my $ani = $params->{'cli'};
+   my $nrn_orig = $params->{'nrn_orig'};
+   $nrn_orig //= '37';
+#   my $pre_prod = $params->{'pre_prod'};
+#   $pre_prod //= '0';
+ 
+   $dbh->do("use portabilidad");
+   $dbn->do("use ngn");
+
+   my $phone = '';
+   my $nrn_dest = 11;
+
+   my $PORTA_MOVIL = 0;
+   my $PORTA_FIJO  = 0;
+   my $PORTA_0800  = 0;
+
+   my $FIJO_WHOLESALE = 0;
+   my $FIJO_WHOLESALE_MOD = 0;
+   my $FIJO_AMEPE = 0;
+   my $FIJO_AMEPE_MOD = 0;
+   my $FIJO_1977 = 0;
+   my $FIJO_1977_1 = 0;
+   my $FIJO_IDT = 0;
+   my $FIJO_OTROSOPE = 0;
+
+   my $P0800_AMEPE = 0;
+
+   my $MOVIL_AVM_LOCAL = 0;
+   my $MOVIL_AVM_INTER = 0;
+   my $MOVIL_IVR_119_1 = 0;
+   my $MOVIL_IVR_119_2 = 0;
+   my $MOVIL_IDT = 0;
+   my $MOVIL_1977 = 0;
+   
+   my $FLEX_1977 = 0;
+
+   $errorCode = 'OK';
+
+   if (($extension eq '1977103') || ($extension eq '1977104')) {			## Numeros traducidos 19771xx
+   	  $FLEX_1977 = 1;
+   	  $phone = $extension;
+   } elsif (($extension =~ m/^080[0-5]/i) && (length($extension) == 9)) {		## 0800 - Origen Americatel
+      $PORTA_0800 = 1;
+      $phone = substr($extension, 1);
+      $P0800_AMEPE = 1;
+   } elsif ($extension =~ m/^19770/i) {		## FIJO - Origen Americatel
+      $PORTA_FIJO = 1;
+      $phone = substr($extension, 5);
+      $FIJO_1977 = 1;
+   } elsif (($extension =~ m/^1977[2-8]/i) && ((length($extension) == 10) || (length($extension) == 11))) {		## FIJO - Origen Americatel - Variante 1
+      $PORTA_FIJO = 1;
+      if ($ani =~ m/^1/i) {
+         $area_code = '1';
+      } else {
+         $area_code = substr($ani, 0, 2);
+      }
+      $phone = $area_code.substr($extension, 4);
+      $FIJO_1977_1 = 1;
+   } elsif ($extension =~ m/^19779/i) {		## MOVIL - Origen Americatel
+      $PORTA_MOVIL = 1;
+      $phone = substr($extension, 4);
+      $MOVIL_1977 = 1;
+   } elsif (($extension =~ m/^31/i) && (length($extension) == 10)) {		## FIJO - IDT
+      $PORTA_FIJO = 1;
+      $phone = substr($extension, 2);
+      $FIJO_IDT = 1;
+   } elsif (($extension =~ m/^37/i) && (length($extension) == 12)) {		## FIJO - Origen Fijo Otros Operadores
+      $PORTA_FIJO = 1;
+      $phone = substr($extension, 4);
+      $nrn_orig = substr($extension, 2, 2);
+      $FIJO_OTROSOPE = 1;
+   } elsif (($extension =~ m/^0[1-8]/i) && (length($extension) == 9)) {		## FIJO - Origen Wholesale
+      $PORTA_FIJO = 1;
+      $phone = substr($extension, 1);
+      $FIJO_WHOLESALE = 1;
+   } elsif (($extension =~ m/^[1-8]/i) && (length($extension) == 8)) {		## FIJO - Origen Wholesale - Modificado
+      $PORTA_FIJO = 1;
+      $phone = $extension;
+      $FIJO_WHOLESALE_MOD = 1;
+   } elsif (($extension =~ m/^[1-8]/i) && ((length($extension) == 6) || (length($extension) == 7))) {		## FIJO - Origen Americatel
+      $PORTA_FIJO = 1;
+      if ($ani =~ m/^1/i) {
+         $area_code = '1';
+      } else {
+         $area_code = substr($ani, 0, 2);
+      }
+      $phone = $area_code.$extension;
+      $FIJO_AMEPE = 1;
+   } elsif (($extension =~ m/^0[1-8]/i) && ((length($extension) == 7) || (length($extension) == 8))) {	## FIJO - Origen Americatel - Modificado
+      $PORTA_FIJO = 1;
+      if (($ani =~ m/^1/i) || ($ani =~ m/^9/i)) {
+         $area_code = '1';
+      } else {
+         $area_code = substr($ani, 0, 2);
+      }
+      $phone = $area_code.substr($extension, 1);
+      $FIJO_AMEPE_MOD = 1;
+   } elsif ($extension =~ m/^09/i) {		## MOVIL - Origen Fijo LOCAL, Destino MOVIL
+      $PORTA_MOVIL = 1;
+      $phone = substr($extension, 1);
+      $MOVIL_AVM_LOCAL = 1;
+   } elsif ($extension =~ m/^9/i) {		## MOVIL - Origen Internacional y Prepago, Destino MOVIL
+      $PORTA_MOVIL = 1;
+      $phone = $extension;
+      $MOVIL_AVM_INTER = 1;
+   } elsif ($extension =~ m/^319/i) {		## MOVIL - Origen IDT PERU, Destino MOVIL
+      $PORTA_MOVIL = 1;
+      $phone = substr($extension, 2);
+      $MOVIL_IDT = 1;
+   } elsif ($extension =~ m/^11919/i) {		## MOVIL - IVR 119 / AVM / OPCION 1
+      $PORTA_MOVIL = 1;
+      $phone = substr($extension, 4);
+      $MOVIL_IVR_119_1 = 1;
+   } elsif ($extension =~ m/^11929/i) {		## MOVIL - IVR 119 / AVM / OPCION 2
+      $PORTA_MOVIL = 1;
+      $phone = substr($extension, 4);
+      $MOVIL_IVR_119_2 = 1;
+   } elsif ($extension =~ m/^1191[1-8]/i) {		## FIJO - IVR 119 / AVM / OPCION 1
+      $PORTA_FIJO = 1;
+      $phone = substr($extension, 4);
+      $FIJO_IVR_119_1 = 1;
+   } elsif ($extension =~ m/^1192[1-8]/i) {		## FIJO - IVR 119 / AVM / OPCION 2
+      $PORTA_FIJO = 1;
+      $phone = substr($extension, 4);
+      $FIJO_IVR_119_2 = 1;
+   } else {
+      $errorCode = 'UNMATCHED';
+   }
+
+   ##
+   ## Validaciones de longitud de numeros
+   ##--------------------------------------------------------------------------
+   if ($PORTA_MOVIL) {
+      if (length($phone) != 9) {
+         $errorCode = 'UNMATCHED';
+      }
+   } elsif ($PORTA_FIJO) {
+      if (length($phone) != 8) {
+         $errorCode = 'UNMATCHED';
+      }
+   } elsif ($PORTA_0800) {
+      if (length($phone) != 8) {
+         $errorCode = 'UNMATCHED';
+      }
+   }
+
+   $self->log(2, "portax: extension $extension - ani $ani - phone $phone - tipo_porta $PORTA_FIJO.$PORTA_0800.$PORTA_MOVIL - initial errorCode $errorCode");
+
+   ##
+   ## Obtenemos el nrn_receptor
+   ##--------------------------------------------------------------------------
+   if ($errorCode eq 'OK') {
+      if ($PORTA_MOVIL) {
+         my $query = "SELECT nrn_receptor FROM numeros_portados WHERE telefono = ?";
+         my $sth = $dbh->prepare($query);
+         $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         $data = $sth->fetch;
+         $nrn_dest = $data->[0];
+         if ($nrn_dest == null) {
+            $prefijo = substr($phone, 0, 5);
+            my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?"; 
+            my $sth = $dbh->prepare($query);
+            $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            $data = $sth->fetch;
+            $nrn_dest = $data->[0];
+            if ($nrn_dest == null) {
+	           $errorCode = 'UNMATCHED';
+            }
+         }
+      } elsif ($PORTA_FIJO) {
+         my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+         my $sth = $dbh->prepare($query);
+         $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         $data = $sth->fetch;
+         $nrn_dest = $data->[0];
+         if ($nrn_dest == null) {
+            $prefijo = substr($phone, 0, 6);
+            my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+            my $sth = $dbh->prepare($query);
+            $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            $data = $sth->fetch;
+            $nrn_dest = $data->[0];
+            if ($nrn_dest == null) {
+	           $errorCode = 'UNMATCHED';
+            }
+         }
+      } elsif ($PORTA_0800) {
+         my $query = "SELECT nrn_receptor FROM numeros_portados_080C WHERE telefono = ?";
+         my $sth = $dbh->prepare($query);
+         $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         $data = $sth->fetch;
+         $nrn_dest = $data->[0];
+         if ($nrn_dest == null) {
+            $prefijo = substr($phone, 0, 6);
+            my $query = "SELECT nrn FROM plan_numeracion_080C WHERE prefijo = ?";
+            my $sth = $dbh->prepare($query);
+            $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            $data = $sth->fetch;
+            $nrn_dest = $data->[0];
+            if ($nrn_dest == null) {
+	           $errorCode = 'UNMATCHED';
+            }
+         }
+      }
+
+      ##
+	  ## Consultamos la portabilidad centralizada
+	  ##--------------------------------------------------------------------------
+	  if ($errorCode eq 'OK') {	  	 
+	  	 ## Verificamos si el nrn_dest = 37, consultamos la base de datos de portabilidad centralizada solo para el caso PORTA_FIJO y PORTA_0800
+	     if ($nrn_dest == 37) {
+	     	#if (($PORTA_FIJO) && ($pre_prod ne '0')) {
+	     	if ($PORTA_FIJO) {
+	     	   my $query = "SELECT nrn_interno FROM numeracion_amp WHERE telefono = ?";
+	     	   my $sth = $dbh->prepare($query);
+	     	   $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - ani: $phone");
+	     	   $data = $sth->fetch;
+         	   $nrn_dest = $data->[0];
+         	   if ($nrn_dest == null) {
+	              $errorCode = 'UNMATCHED';
+               }
+	     	} elsif ($PORTA_0800) {
+	     	   ## Salvamos el valor de nrn_dest
+	     	   $nrn_dest_save = $nrn_dest;
+	     	   ## Consultamos el Servicio NGN 080C
+         	   $self->log(2, "numero 0800 pertenece a Americatel");
+         	   my $query = "SELECT numero_080C, traduccion_orig_fijo, traduccion_orig_movil, portado, activo, ngn_cobertura_id FROM ngn_numeros_locales_080C WHERE numero_080C = ?";
+         	   my $sth = $dbn->prepare($query);
+         	   $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - phone: $phone");
+         	   $data = $sth->fetch;
+         	   my $numero_080C = $data->[0];
+         	   if ($numero_080C == null) {
+	              $errorCode = 'UNMATCHED';
+               } else {
+               	  my $traduccion_orig_fijo = $data->[1];
+               	  my $traduccion_orig_movil = $data->[2];
+               	  my $portado = $data->[3];
+               	  my $activo = $data->[4];
+               	  my $ngn_cobertura_id = $data->[5];
+               	  $numero_080C_traducido = null;
+               	  
+               	  ## Requerimiento de Flexibilizacion de numero 080070099 por horario
+               	  if ($phone eq '80070099') {
+               	  	 # Obtenemos la hora de la llamada
+               	  	 $hour_now = DateTime->now(time_zone=>'America/Lima')->strftime('%H');
+               	  	 $hour_now = $hour_now + 0;
+               	  	 if (($hour_now >= 0) && ($hour_now <= 6)) {
+               	  	 	$traduccion_orig_fijo = '17107900';
+               	  	 	$traduccion_orig_movil = '17107900';
+               	  	 }
+               	  	 $self->log(2, "numero 080070099 se encuentra en horario de flexibilizacion - numero traducido $traduccion_orig_fijo");
+               	  }
+               	  ## Fin de requerimiento
+               	  
+               	  if ($activo == 1) {
+               	     if (($ani =~ m/^[1-8]/i) && (($ngn_cobertura_id == 1) || ($ngn_cobertura_id == 2))) {
+               	  	    $numero_080C_traducido = $traduccion_orig_fijo;
+               	  	    $self->log(2, "numero 0800 - numero_080C_traducido origen fijo $numero_080C_traducido");
+               	     } elsif (($ani =~ m/^[9]/i) && (($ngn_cobertura_id == 1) || ($ngn_cobertura_id == 3))) {
+               	  	    $numero_080C_traducido = $traduccion_orig_movil;
+               	  	    $self->log(2, "numero 0800 - numero_080C_traducido origen movil $numero_080C_traducido");
+               	     } else {
+               	  	    $errorCode = 'UNMATCHED';
+               	     }
+               	     if ($numero_080C_traducido != null) {
+               	  	    if ($portado == 1) {
+               	  	 	   $phone = $numero_080C_traducido;
+               	  	 	   if (($phone =~ m/^[1-8]/i) && (length($phone) == 8)) {
+               	  	 	      my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
+         				      my $sth = $dbh->prepare($query);
+         			   	      $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - $phone: $phone");
+         				      $data = $sth->fetch;
+         				      $nrn_dest = $data->[0];
+         				      if ($nrn_dest == null) {
+            				     $prefijo = substr($phone, 0, 6);
+            			      	 my $query = "SELECT nrn FROM plan_numeracion_fijos WHERE prefijo = ?";
+            				     my $sth = $dbh->prepare($query);
+            				     $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            				     $data = $sth->fetch;
+            				     $nrn_dest = $data->[0];
+               				     if ($nrn_dest == null) {
+	           					    $errorCode = 'UNMATCHED';
+             				     }
+         				      }
+         				      ## Verificamos si el nrn_dest = 37, consultamos la base de datos de portabilidad centralizada
+         				      if ($errorCode eq 'OK') {
+         				         #if (($nrn_dest == 37) && ($pre_prod ne '0')) {
+         				         if ($nrn_dest == 37) {
+         				   	        my $query = "SELECT nrn_interno FROM numeracion_amp WHERE telefono = ?";
+	     	                        my $sth = $dbh->prepare($query);
+	     	                        $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - ani: $phone");
+	     	                        $data = $sth->fetch;
+         	                        $nrn_dest = $data->[0];
+         	                        if ($nrn_dest == null) {
+	                                   $errorCode = 'UNMATCHED';
+                                    } else {
+                                 	   $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
+                                    }
+         				         } else {
+         				         	 $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
+         				         }
+         				      }
+               	  	 	   } elsif (($phone =~ m/^9/i)  && (length($phone) == 9)) {
+               	  	 	      my $query = "SELECT nrn_receptor FROM numeros_portados WHERE telefono = ?";
+         				      my $sth = $dbh->prepare($query);
+         				      $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - $phone: $phone");
+         				      $data = $sth->fetch;
+         				      $nrn_dest = $data->[0];
+         				      if ($nrn_dest == null) {
+            				     $prefijo = substr($phone, 0, 5);
+            				     my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?";
+            				     my $sth = $dbh->prepare($query);
+            				     $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            				     $data = $sth->fetch;
+            				     $nrn_dest = $data->[0];
+               				     if ($nrn_dest == null) {
+	           					    $errorCode = 'UNMATCHED';
+             				     } else {
+             				  	    $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
+             				     }
+         				      } else {
+         				   	     $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
+         				      }
+               	  	 	   } else {
+               	  	 	      ## $phone no es movil ni fijo
+               	  	 	      $errorCode = 'UNMATCHED';
+               	  	 	   }
+               	  	    }
+               	     } else {
+               	  	    ## $numero_080C_traducido is null
+               	        $errorCode = 'UNMATCHED';
+               	     }
+               	  } else {
+               	  	 ## $activo != 1
+               	  	 $errorCode = 'UNMATCHED';
+               	  }
+               }
+               ## Recuperamos el valor de nrn_dest
+               $nrn_dest = $nrn_dest_save;
+	     	}
+	     }
+	  }
+
+      ##
+      ## Generamos el numero_traducido
+      ##--------------------------------------------------------------------------
+      if ($errorCode eq 'OK') {
+         if ($FIJO_1977) {
+            $numero_traducido = '1977'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_IDT) {
+            $nrn_orig = 31;
+            $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_OTROSOPE) {
+            $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_WHOLESALE) {
+            $numero_traducido = $nrn_dest.$nrn_orig.'0'.$phone;
+         } elsif ($FIJO_WHOLESALE_MOD) {
+            $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_AMEPE) {
+            $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_AMEPE_MOD) {
+            $numero_traducido = 'A'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_1977_1) {
+            $numero_traducido = '1977'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_IVR_119_1) {
+            $numero_traducido = '1191'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($FIJO_IVR_119_2) {
+            $numero_traducido = '1192'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($P0800_AMEPE) {
+         	if ($nrn_dest == 37) {
+			   $numero_traducido = $numero_080C_traducido;
+         	} else {
+         	   $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         	}
+         } elsif ($MOVIL_AVM_LOCAL) {
+            $numero_traducido = '0'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($MOVIL_AVM_INTER) {
+            $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         } elsif ($MOVIL_IDT) {
+            $nrn_orig = 31;
+            $numero_traducido = $nrn_dest.$nrn_orig.$phone;
+         } elsif ($MOVIL_IVR_119_1) {
+            $numero_traducido = '1191'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($MOVIL_IVR_119_2) {
+            $numero_traducido = '1192'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($MOVIL_1977) {
+         	$numero_traducido = '1977'.$nrn_dest.$nrn_orig.$phone;
+         } elsif ($FLEX_1977) {
+         	## Requerimiento de Flexibilizacion de numero 197710x por horario
+         	# Obtenemos la hora de la llamada
+         	$hour_now = DateTime->now(time_zone=>'America/Lima')->strftime('%H');
+            $hour_now = $hour_now + 0;
+            if (($hour_now >= 0) && ($hour_now <= 6)) {
+               if (($phone eq '1977103') || ($phone eq '1977104')) {
+               	  $numero_traducido = '8737'.'17107900';
+               }
+            } else {
+               if ($phone eq '1977103') {
+               	  $numero_traducido = '8837'.'17114473';
+               } elsif ($phone eq '1977104') {
+               	  $numero_traducido = '8837'.'17114474';
+               }
+            }
+            $self->log(2, "Numero $phone se encuentra en horario de flexibilizacion - numero traducido $numero_traducido");
+            ## Fin de requerimiento
+         }
+
+         $self->log(2, "portax final: extension $extension - phone $phone - numero_traducido $numero_traducido");
+         $agi->set_variable('numero_traducido', $numero_traducido);
+      }
+   }
+
+   $agi->set_variable('errorCode', $errorCode);
+
+   return(1);
+}
