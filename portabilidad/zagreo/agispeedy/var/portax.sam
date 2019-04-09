@@ -174,15 +174,22 @@ sub portax {
          $data = $sth->fetch;
          $nrn_dest = $data->[0];
          if ($nrn_dest == null) {
-            $prefijo = substr($phone, 0, 5);
-            my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?"; 
-            my $sth = $dbh->prepare($query);
-            $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
-            $data = $sth->fetch;
-            $nrn_dest = $data->[0];
-            if ($nrn_dest == null) {
-	           $errorCode = 'UNMATCHED';
-            }
+         	my $query = "SELECT nrn FROM numeros_plan WHERE telefono = ?";
+         	my $sth = $dbh->prepare($query);
+         	$sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - plan phone: $phone");
+         	$data = $sth->fetch;
+         	$nrn_dest = $data->[0];
+         	if ($nrn_dest == null) {
+	            $prefijo = substr($phone, 0, 5);
+	            my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?"; 
+	            my $sth = $dbh->prepare($query);
+	            $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+	            $data = $sth->fetch;
+	            $nrn_dest = $data->[0];
+	            if ($nrn_dest == null) {
+		           $errorCode = 'UNMATCHED';
+	            }
+         	}
          }
       } elsif ($PORTA_FIJO) {
          my $query = "SELECT nrn_receptor FROM numeros_portados_fijos WHERE telefono = ?";
@@ -223,10 +230,9 @@ sub portax {
       ##
 	  ## Consultamos la portabilidad centralizada
 	  ##--------------------------------------------------------------------------
-	  if ($errorCode eq 'OK') {	  	 
+	  if ($errorCode eq 'OK') {
 	  	 ## Verificamos si el nrn_dest = 37, consultamos la base de datos de portabilidad centralizada solo para el caso PORTA_FIJO y PORTA_0800
 	     if ($nrn_dest == 37) {
-	     	#if (($PORTA_FIJO) && ($pre_prod ne '0')) {
 	     	if ($PORTA_FIJO) {
 	     	   my $query = "SELECT nrn_interno FROM numeracion_amp WHERE telefono = ?";
 	     	   my $sth = $dbh->prepare($query);
@@ -301,7 +307,6 @@ sub portax {
          				      }
          				      ## Verificamos si el nrn_dest = 37, consultamos la base de datos de portabilidad centralizada
          				      if ($errorCode eq 'OK') {
-         				         #if (($nrn_dest == 37) && ($pre_prod ne '0')) {
          				         if ($nrn_dest == 37) {
          				   	        my $query = "SELECT nrn_interno FROM numeracion_amp WHERE telefono = ?";
 	     	                        my $sth = $dbh->prepare($query);
@@ -324,17 +329,26 @@ sub portax {
          				      $data = $sth->fetch;
          				      $nrn_dest = $data->[0];
          				      if ($nrn_dest == null) {
-            				     $prefijo = substr($phone, 0, 5);
-            				     my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?";
-            				     my $sth = $dbh->prepare($query);
-            				     $sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
-            				     $data = $sth->fetch;
-            				     $nrn_dest = $data->[0];
-               				     if ($nrn_dest == null) {
-	           					    $errorCode = 'UNMATCHED';
-             				     } else {
-             				  	    $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
-             				     }
+         				      	 my $query = "SELECT nrn FROM numeros_plan WHERE telefono = ?";
+					         	 my $sth = $dbh->prepare($query);
+					         	 $sth->execute($phone) or $self->log(2, "Unable to execute '$query'. $sth->errstr - plan phone: $phone");
+					         	 $data = $sth->fetch;
+					         	 $nrn_dest = $data->[0];
+					         	 if ($nrn_dest == null) {
+            				     	$prefijo = substr($phone, 0, 5);
+            				     	my $query = "SELECT nrn FROM plan_numeracion WHERE prefijo = ?";
+            				     	my $sth = $dbh->prepare($query);
+            				     	$sth->execute($prefijo) or $self->log(2, "Unable to execute '$query'. $sth->errstr - prefijo: $prefijo");
+            				     	$data = $sth->fetch;
+            				     	$nrn_dest = $data->[0];
+               				     	if ($nrn_dest == null) {
+	           					       $errorCode = 'UNMATCHED';
+             				     	} else {
+             				  	       $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
+             				     	}
+					         	 } else {
+					         	 	$numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
+					         	 }
          				      } else {
          				   	     $numero_080C_traducido = $nrn_dest.$nrn_orig.$phone;
          				      }
